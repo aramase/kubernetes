@@ -30,7 +30,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-07-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -370,7 +370,7 @@ func (as *availabilitySet) GetPowerStatusByNodeName(name string) (powerState str
 }
 
 // GetNodeNameByProviderID gets the node name by provider ID.
-func (as *availabilitySet) GetNodeNameByProviderID(providerID string) (types.NodeName, error) {
+func (as *availabilitySet) GetNodeNameByProviderID(providerID string, refreshType cacheRefreshType) (types.NodeName, error) {
 	// NodeName is part of providerID for standard instances.
 	matches := providerIDRE.FindStringSubmatch(providerID)
 	if len(matches) != 2 {

@@ -95,7 +95,7 @@ func (az *Cloud) GetZoneByProviderID(ctx context.Context, providerID string) (cl
 		return cloudprovider.Zone{}, nil
 	}
 
-	nodeName, err := az.vmSet.GetNodeNameByProviderID(providerID)
+	nodeName, err := az.vmSet.GetNodeNameByProviderID(providerID, cacheRefreshTypeDefault)
 	if err != nil {
 		return cloudprovider.Zone{}, err
 	}

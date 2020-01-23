@@ -24,8 +24,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// cacheReadType defines the read type for cache data
-type cacheReadType int
+type (
+	// cacheReadType defines the read type for cache data
+	cacheReadType int
+	// cacheRefreshType defines the refresh type for cache data
+	cacheRefreshType int
+)
 
 const (
 	// cacheReadTypeDefault returns data from cache if cache entry not expired
@@ -36,6 +40,12 @@ const (
 	// active/expired. If entry doesn't exist in cache, then data is fetched
 	// using getter, saved in cache and returned
 	cacheReadTypeUnsafe
+	// cacheRefreshTypeDefault returns data from cache if exists. If not
+	// exists, then cache will be invalidated, refetched
+	cacheRefreshTypeDefault cacheRefreshType = iota
+	// cacheRefreshTypeAllowNotExist returns data from cache if exists. If not
+	// exists, then will not force cache invalidation
+	cacheRefreshTypeAllowNotExist
 )
 
 // getFunc defines a getter function for timedCache.

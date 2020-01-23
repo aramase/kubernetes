@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 
@@ -919,7 +919,7 @@ func (f *fakeVMSet) GetPrimaryInterface(nodeName string) (network.Interface, err
 	return network.Interface{}, fmt.Errorf("unimplemented")
 }
 
-func (f *fakeVMSet) GetNodeNameByProviderID(providerID string) (types.NodeName, error) {
+func (f *fakeVMSet) GetNodeNameByProviderID(providerID string, refreshType cacheRefreshType) (types.NodeName, error) {
 	return types.NodeName(""), fmt.Errorf("unimplemented")
 }
 

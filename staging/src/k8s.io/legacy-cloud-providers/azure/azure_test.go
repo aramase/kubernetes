@@ -1821,7 +1821,7 @@ func TestGetNodeNameByProviderID(t *testing.T) {
 	}
 
 	for _, test := range providers {
-		name, err := az.vmSet.GetNodeNameByProviderID(test.providerID)
+		name, err := az.vmSet.GetNodeNameByProviderID(test.providerID, cacheRefreshTypeDefault)
 		if (err != nil) != test.fail {
 			t.Errorf("Expected to failt=%t, with pattern %v", test.fail, test)
 		}

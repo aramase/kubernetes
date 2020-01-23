@@ -149,7 +149,7 @@ func (az *Cloud) NodeAddressesByProviderID(ctx context.Context, providerID strin
 		return nil, nil
 	}
 
-	name, err := az.vmSet.GetNodeNameByProviderID(providerID)
+	name, err := az.vmSet.GetNodeNameByProviderID(providerID, cacheRefreshTypeDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,7 @@ func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID stri
 		return true, nil
 	}
 
-	name, err := az.vmSet.GetNodeNameByProviderID(providerID)
+	name, err := az.vmSet.GetNodeNameByProviderID(providerID, cacheRefreshTypeAllowNotExist)
 	if err != nil {
 		if err == cloudprovider.InstanceNotFound {
 			return false, nil
@@ -187,7 +187,7 @@ func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID stri
 
 // InstanceShutdownByProviderID returns true if the instance is in safe state to detach volumes
 func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID string) (bool, error) {
-	nodeName, err := az.vmSet.GetNodeNameByProviderID(providerID)
+	nodeName, err := az.vmSet.GetNodeNameByProviderID(providerID, cacheRefreshTypeAllowNotExist)
 	if err != nil {
 		return false, err
 	}
@@ -196,7 +196,7 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 	if err != nil {
 		return false, err
 	}
-	klog.V(5).Infof("InstanceShutdownByProviderID gets power status %q for node %q", powerStatus, nodeName)
+	klog.V(2).Infof("InstanceShutdownByProviderID gets power status %q for node %q", powerStatus, nodeName)
 
 	return strings.ToLower(powerStatus) == vmPowerStateStopped || strings.ToLower(powerStatus) == vmPowerStateDeallocated, nil
 }
@@ -289,7 +289,7 @@ func (az *Cloud) InstanceTypeByProviderID(ctx context.Context, providerID string
 		return "", nil
 	}
 
-	name, err := az.vmSet.GetNodeNameByProviderID(providerID)
+	name, err := az.vmSet.GetNodeNameByProviderID(providerID, cacheRefreshTypeDefault)
 	if err != nil {
 		return "", err
 	}
