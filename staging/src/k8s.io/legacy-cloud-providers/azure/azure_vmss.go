@@ -820,19 +820,19 @@ func (ss *scaleSet) EnsureHostInPool(service *v1.Service, nodeName types.NodeNam
 
 	var primaryIPConfiguration *compute.VirtualMachineScaleSetIPConfiguration
 	// Find primary network interface configuration.
-	if !ss.Cloud.ipv6DualStackEnabled {
-		// Find primary IP configuration.
-		primaryIPConfiguration, err = getPrimaryIPConfigFromVMSSNetworkConfig(primaryNetworkInterfaceConfiguration)
-		if err != nil {
-			return err
-		}
-	} else {
-		ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
-		primaryIPConfiguration, err = ss.getConfigForScaleSetByIPFamily(primaryNetworkInterfaceConfiguration, vmName, ipv6)
-		if err != nil {
-			return err
-		}
+	// if !ss.Cloud.ipv6DualStackEnabled {
+	// 	// Find primary IP configuration.
+	// 	primaryIPConfiguration, err = getPrimaryIPConfigFromVMSSNetworkConfig(primaryNetworkInterfaceConfiguration)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// } else {
+	ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
+	primaryIPConfiguration, err = ss.getConfigForScaleSetByIPFamily(primaryNetworkInterfaceConfiguration, vmName, ipv6)
+	if err != nil {
+		return err
 	}
+	// }
 
 	// Update primary IP configuration's LoadBalancerBackendAddressPools.
 	foundPool := false
