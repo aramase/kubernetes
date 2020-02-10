@@ -29,7 +29,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-07-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	cloudprovider "k8s.io/cloud-provider"
@@ -1011,6 +1011,7 @@ func (ss *scaleSet) EnsureHostsInPool(service *v1.Service, nodes []*v1.Node, bac
 				}
 			}
 
+			klog.Infof("EnsureHostInPool(%s): backendPoolID(%s), nodeName(%s)", getServiceName(service), backendPoolID, localNodeName)
 			err := ss.EnsureHostInPool(service, types.NodeName(localNodeName), backendPoolID, vmSetName, isInternal)
 			if err != nil {
 				return fmt.Errorf("EnsureHostInPool(%s): backendPoolID(%s) - failed to ensure host in pool: %q", getServiceName(service), backendPoolID, err)
@@ -1020,9 +1021,30 @@ func (ss *scaleSet) EnsureHostsInPool(service *v1.Service, nodes []*v1.Node, bac
 		hostUpdates = append(hostUpdates, f)
 	}
 
-	errs := utilerrors.AggregateGoroutines(hostUpdates...)
+	concurrent := 2
+	errChan := make(chan error, len(hostUpdates))
+
+	sem := make(chan bool, concurrent)
+	errs := make([]error, len(hostUpdates))
+	for _, f := range hostUpdates {
+		sem <- true
+		go func(f func() error) {
+			err := f()
+			if err != nil {
+				errs = append(errs, err)
+			}
+			errChan <- err
+			<-sem
+		}(f)
+	}
+
+	// populate to verify all done
+	for i := 0; i < cap(sem); i++ {
+		sem <- true
+	}
+
 	if errs != nil {
-		return utilerrors.Flatten(errs)
+		return utilerrors.Flatten(utilerrors.NewAggregate(errs))
 	}
 
 	// we need to add the LB backend updates back to VMSS model, see issue kubernetes/kubernetes#80365 for detailed information
