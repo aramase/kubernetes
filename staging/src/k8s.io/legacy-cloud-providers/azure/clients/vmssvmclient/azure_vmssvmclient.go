@@ -239,6 +239,36 @@ func (c *Client) Update(ctx context.Context, resourceGroupName string, VMScaleSe
 	return nil
 }
 
+// UpdateVMSSVMs updates all vmss vms
+func (c *Client) UpdateVMSSVMs(ctx context.Context, resourceGroupName, VMScaleSetName string, instanceComputeMap map[string]compute.VirtualMachineScaleSetVM, source string) *retry.Error {
+	mc := metrics.NewMetricContext("vmssvm", "update", resourceGroupName, c.subscriptionID, source)
+	// Report errors if the client is rate limited.
+	if !c.rateLimiterWriter.TryAccept() {
+		mc.RateLimitedCount()
+		return retry.GetRateLimitError(true, "VMSSVMUpdate")
+	}
+
+	// Report errors if the client is throttled.
+	if c.RetryAfterWriter.After(time.Now()) {
+		mc.ThrottledCount()
+		rerr := retry.GetThrottlingError("VMSSVMUpdate", "client throttled", c.RetryAfterWriter)
+		return rerr
+	}
+
+	rerr := c.updateVMSSVMs(ctx, resourceGroupName, VMScaleSetName, instanceComputeMap)
+	mc.Observe(rerr.Error())
+	if rerr != nil {
+		if rerr.IsThrottled() {
+			// Update RetryAfterReader so that no more requests would be sent until RetryAfter expires.
+			c.RetryAfterWriter = rerr.RetryAfter
+		}
+
+		return rerr
+	}
+
+	return nil
+}
+
 // updateVMSSVM updates a VirtualMachineScaleSetVM.
 func (c *Client) updateVMSSVM(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, parameters compute.VirtualMachineScaleSetVM) *retry.Error {
 	resourceID := armclient.GetChildResourceID(
@@ -262,6 +292,43 @@ func (c *Client) updateVMSSVM(ctx context.Context, resourceGroupName string, VMS
 		if rerr != nil {
 			klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "vmssvm.put.respond", resourceID, rerr.Error())
 			return rerr
+		}
+	}
+
+	return nil
+}
+
+func (c *Client) updateVMSSVMs(ctx context.Context, resourceGroupName, VMScaleSetName string, instanceComputeMap map[string]compute.VirtualMachineScaleSetVM) *retry.Error {
+	resourceIDComputeMap := make(map[string]interface{})
+
+	for instanceID, parameters := range instanceComputeMap {
+		resourceID := armclient.GetChildResourceID(
+			c.subscriptionID,
+			resourceGroupName,
+			"Microsoft.Compute/virtualMachineScaleSets",
+			VMScaleSetName,
+			"virtualMachines",
+			instanceID,
+		)
+		resourceIDComputeMap[resourceID] = parameters
+	}
+
+	responses, rerrs := c.armClient.PutMultipleResource(ctx, resourceIDComputeMap)
+
+	for idx, rerr := range rerrs {
+		response := responses[idx]
+		defer c.armClient.CloseResponse(ctx, response)
+		if rerr != nil {
+			klog.V(5).Infof("Received error in %s, error: %s", "vmssvm.put.request", rerr.Error())
+			return rerr
+		}
+
+		if response != nil && response.StatusCode != http.StatusNoContent {
+			_, rerr = c.updateResponder(response)
+			if rerr != nil {
+				klog.V(5).Infof("Received error in %s, error: %s", "vmssvm.put.respond", rerr.Error())
+				return rerr
+			}
 		}
 	}
 

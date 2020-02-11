@@ -42,4 +42,7 @@ type Interface interface {
 
 	// Update updates a VirtualMachineScaleSetVM.
 	Update(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, parameters compute.VirtualMachineScaleSetVM, source string) *retry.Error
+
+	// UpdateVMSSVM updates a VirtualMachineScaleSetVM.
+	UpdateVMSSVMs(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceComputeMap map[string]compute.VirtualMachineScaleSetVM, source string) *retry.Error
 }

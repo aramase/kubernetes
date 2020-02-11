@@ -717,84 +717,86 @@ func (as *availabilitySet) getPrimaryInterfaceWithVMSet(nodeName, vmSetName stri
 
 // EnsureHostInPool ensures the given VM's Primary NIC's Primary IP Configuration is
 // participating in the specified LoadBalancer Backend Pool.
-func (as *availabilitySet) EnsureHostInPool(service *v1.Service, nodeName types.NodeName, backendPoolID string, vmSetName string, isInternal bool) error {
-	vmName := mapNodeNameToVMName(nodeName)
-	serviceName := getServiceName(service)
-	nic, err := as.getPrimaryInterfaceWithVMSet(vmName, vmSetName)
-	if err != nil {
-		if err == errNotInVMSet {
-			klog.V(3).Infof("EnsureHostInPool skips node %s because it is not in the vmSet %s", nodeName, vmSetName)
+func (as *availabilitySet) EnsureHostInPool(service *v1.Service, nodeNames []types.NodeName, backendPoolID string, vmSetName string, isInternal bool) error {
+	for _, nodeName := range nodeNames {
+		vmName := mapNodeNameToVMName(nodeName)
+		serviceName := getServiceName(service)
+		nic, err := as.getPrimaryInterfaceWithVMSet(vmName, vmSetName)
+		if err != nil {
+			if err == errNotInVMSet {
+				klog.V(3).Infof("EnsureHostInPool skips node %s because it is not in the vmSet %s", nodeName, vmSetName)
+				return nil
+			}
+
+			klog.Errorf("error: az.EnsureHostInPool(%s), az.vmSet.GetPrimaryInterface.Get(%s, %s), err=%v", nodeName, vmName, vmSetName, err)
+			return err
+		}
+
+		if nic.ProvisioningState != nil && *nic.ProvisioningState == nicFailedState {
+			klog.Warningf("EnsureHostInPool skips node %s because its primary nic %s is in Failed state", nodeName, *nic.Name)
 			return nil
 		}
 
-		klog.Errorf("error: az.EnsureHostInPool(%s), az.vmSet.GetPrimaryInterface.Get(%s, %s), err=%v", nodeName, vmName, vmSetName, err)
-		return err
-	}
-
-	if nic.ProvisioningState != nil && *nic.ProvisioningState == nicFailedState {
-		klog.Warningf("EnsureHostInPool skips node %s because its primary nic %s is in Failed state", nodeName, *nic.Name)
-		return nil
-	}
-
-	var primaryIPConfig *network.InterfaceIPConfiguration
-	if !as.Cloud.ipv6DualStackEnabled {
-		primaryIPConfig, err = getPrimaryIPConfig(nic)
-		if err != nil {
-			return err
-		}
-	} else {
-		ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
-		primaryIPConfig, err = getIPConfigByIPFamily(nic, ipv6)
-		if err != nil {
-			return err
-		}
-	}
-
-	foundPool := false
-	newBackendPools := []network.BackendAddressPool{}
-	if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
-		newBackendPools = *primaryIPConfig.LoadBalancerBackendAddressPools
-	}
-	for _, existingPool := range newBackendPools {
-		if strings.EqualFold(backendPoolID, *existingPool.ID) {
-			foundPool = true
-			break
-		}
-	}
-	if !foundPool {
-		if as.useStandardLoadBalancer() && len(newBackendPools) > 0 {
-			// Although standard load balancer supports backends from multiple availability
-			// sets, the same network interface couldn't be added to more than one load balancer of
-			// the same type. Omit those nodes (e.g. masters) so Azure ARM won't complain
-			// about this.
-			newBackendPoolsIDs := make([]string, 0, len(newBackendPools))
-			for _, pool := range newBackendPools {
-				if pool.ID != nil {
-					newBackendPoolsIDs = append(newBackendPoolsIDs, *pool.ID)
-				}
-			}
-			isSameLB, oldLBName, err := isBackendPoolOnSameLB(backendPoolID, newBackendPoolsIDs)
+		var primaryIPConfig *network.InterfaceIPConfiguration
+		if !as.Cloud.ipv6DualStackEnabled {
+			primaryIPConfig, err = getPrimaryIPConfig(nic)
 			if err != nil {
 				return err
 			}
-			if !isSameLB {
-				klog.V(4).Infof("Node %q has already been added to LB %q, omit adding it to a new one", nodeName, oldLBName)
-				return nil
+		} else {
+			ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
+			primaryIPConfig, err = getIPConfigByIPFamily(nic, ipv6)
+			if err != nil {
+				return err
 			}
 		}
 
-		newBackendPools = append(newBackendPools,
-			network.BackendAddressPool{
-				ID: to.StringPtr(backendPoolID),
-			})
+		foundPool := false
+		newBackendPools := []network.BackendAddressPool{}
+		if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
+			newBackendPools = *primaryIPConfig.LoadBalancerBackendAddressPools
+		}
+		for _, existingPool := range newBackendPools {
+			if strings.EqualFold(backendPoolID, *existingPool.ID) {
+				foundPool = true
+				break
+			}
+		}
+		if !foundPool {
+			if as.useStandardLoadBalancer() && len(newBackendPools) > 0 {
+				// Although standard load balancer supports backends from multiple availability
+				// sets, the same network interface couldn't be added to more than one load balancer of
+				// the same type. Omit those nodes (e.g. masters) so Azure ARM won't complain
+				// about this.
+				newBackendPoolsIDs := make([]string, 0, len(newBackendPools))
+				for _, pool := range newBackendPools {
+					if pool.ID != nil {
+						newBackendPoolsIDs = append(newBackendPoolsIDs, *pool.ID)
+					}
+				}
+				isSameLB, oldLBName, err := isBackendPoolOnSameLB(backendPoolID, newBackendPoolsIDs)
+				if err != nil {
+					return err
+				}
+				if !isSameLB {
+					klog.V(4).Infof("Node %q has already been added to LB %q, omit adding it to a new one", nodeName, oldLBName)
+					return nil
+				}
+			}
 
-		primaryIPConfig.LoadBalancerBackendAddressPools = &newBackendPools
+			newBackendPools = append(newBackendPools,
+				network.BackendAddressPool{
+					ID: to.StringPtr(backendPoolID),
+				})
 
-		nicName := *nic.Name
-		klog.V(3).Infof("nicupdate(%s): nic(%s) - updating", serviceName, nicName)
-		err := as.CreateOrUpdateInterface(service, nic)
-		if err != nil {
-			return err
+			primaryIPConfig.LoadBalancerBackendAddressPools = &newBackendPools
+
+			nicName := *nic.Name
+			klog.V(3).Infof("nicupdate(%s): nic(%s) - updating", serviceName, nicName)
+			err := as.CreateOrUpdateInterface(service, nic)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -817,7 +819,7 @@ func (as *availabilitySet) EnsureHostsInPool(service *v1.Service, nodes []*v1.No
 		}
 
 		f := func() error {
-			err := as.EnsureHostInPool(service, types.NodeName(localNodeName), backendPoolID, vmSetName, isInternal)
+			err := as.EnsureHostInPool(service, []types.NodeName{types.NodeName(localNodeName)}, backendPoolID, vmSetName, isInternal)
 			if err != nil {
 				return fmt.Errorf("ensure(%s): backendPoolID(%s) - failed to ensure host in pool: %q", getServiceName(service), backendPoolID, err)
 			}

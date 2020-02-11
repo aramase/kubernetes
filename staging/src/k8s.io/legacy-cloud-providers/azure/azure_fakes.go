@@ -955,7 +955,7 @@ func (f *fakeVMSet) EnsureHostsInPool(service *v1.Service, nodes []*v1.Node, bac
 	return fmt.Errorf("unimplemented")
 }
 
-func (f *fakeVMSet) EnsureHostInPool(service *v1.Service, nodeName types.NodeName, backendPoolID string, vmSetName string, isInternal bool) error {
+func (f *fakeVMSet) EnsureHostInPool(service *v1.Service, nodeName []types.NodeName, backendPoolID string, vmSetName string, isInternal bool) error {
 	return fmt.Errorf("unimplemented")
 }
 

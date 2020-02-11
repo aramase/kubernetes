@@ -61,6 +61,8 @@ type Interface interface {
 	// PutResource puts a resource by resource ID
 	PutResource(ctx context.Context, resourceID string, parameters interface{}) (*http.Response, *retry.Error)
 
+	PutMultipleResource(ctx context.Context, resourceIDComputeMap map[string]interface{}) ([]*http.Response, []*retry.Error)
+
 	// PutResourceWithDecorators puts a resource with decorators by resource ID
 	PutResourceWithDecorators(ctx context.Context, resourceID string, parameters interface{}, decorators []autorest.PrepareDecorator) (*http.Response, *retry.Error)
 

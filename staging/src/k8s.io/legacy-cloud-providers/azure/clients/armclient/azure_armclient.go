@@ -26,6 +26,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -333,6 +334,65 @@ func (c *Client) PutResource(ctx context.Context, resourceID string, parameters 
 		autorest.WithJSON(parameters),
 	}
 	return c.PutResourceWithDecorators(ctx, resourceID, parameters, putDecorators)
+}
+
+// PutMultipleResource ...
+func (c *Client) PutMultipleResource(ctx context.Context, parameters map[string]interface{}) ([]*http.Response, []*retry.Error) {
+	futureMap := make(map[string]*azure.Future)
+	var responses []*http.Response
+	var errs []*retry.Error
+
+	for resourceID, param := range parameters {
+		putDecorators := []autorest.PrepareDecorator{
+			autorest.WithPathParameters("{resourceID}", map[string]interface{}{"resourceID": resourceID}),
+			autorest.WithJSON(param),
+		}
+		request, err := c.PreparePutRequest(ctx, putDecorators...)
+		if err != nil {
+			klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "put.prepare", resourceID, err)
+			errs = append(errs, retry.NewError(false, err))
+			return responses, errs
+		}
+		future, resp, clientErr := c.SendAsync(ctx, request)
+		defer c.CloseResponse(ctx, resp)
+		if clientErr != nil {
+			klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "put.send", resourceID, clientErr.Error())
+			errs = append(errs, clientErr)
+			return responses, errs
+		}
+		klog.Infof("Finished calling async for %s", resourceID)
+		futureMap[resourceID] = future
+	}
+
+	wg := &sync.WaitGroup{}
+	for resourceID, future := range futureMap {
+		wg.Add(1)
+		go func(resourceID string, future *azure.Future) {
+			response, err := c.WaitForAsyncOperationResult(ctx, future, "armclient.PutResource")
+			if err != nil {
+				if response != nil {
+					klog.V(5).Infof("Received error in WaitForAsyncOperationResult: '%s', response code %d", err.Error(), response.StatusCode)
+				} else {
+					klog.V(5).Infof("Received error in WaitForAsyncOperationResult: '%s', no response", err.Error())
+				}
+
+				retriableErr := retry.GetError(response, err)
+				if !retriableErr.Retriable &&
+					strings.Contains(strings.ToUpper(err.Error()), strings.ToUpper("InternalServerError")) {
+					klog.V(5).Infof("Received InternalServerError in WaitForAsyncOperationResult: '%s', setting error retriable", err.Error())
+					retriableErr.Retriable = true
+				}
+				responses = append(responses, nil)
+				errs = append(errs, retriableErr)
+			} else {
+				responses = append(responses, response)
+				errs = append(errs, nil)
+			}
+			wg.Done()
+		}(resourceID, future)
+	}
+	wg.Wait()
+	return responses, errs
 }
 
 // PutResourceWithDecorators puts a resource by resource ID
