@@ -549,23 +549,20 @@ func (az *Cloud) ensurePublicIPExists(service *v1.Service, pipName string, domai
 		}
 	}
 
-	if az.ipv6DualStackEnabled {
-		// TODO: (khenidak) if we ever enable IPv6 single stack, then we should
-		// not wrap the following in a feature gate
-		ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
-		if ipv6 {
-			pip.PublicIPAddressVersion = network.IPv6
-			klog.V(2).Infof("service(%s): pip(%s) - creating as ipv6 for clusterIP:%v", serviceName, *pip.Name, service.Spec.ClusterIP)
+	// This check is done as we support IPv6 single stack
+	ipv6 := utilnet.IsIPv6String(service.Spec.ClusterIP)
+	if ipv6 {
+		pip.PublicIPAddressVersion = network.IPv6
+		klog.V(2).Infof("service(%s): pip(%s) - creating as ipv6 for clusterIP:%v", serviceName, *pip.Name, service.Spec.ClusterIP)
 
-			pip.PublicIPAddressPropertiesFormat.PublicIPAllocationMethod = network.Dynamic
-			if az.useStandardLoadBalancer() {
-				// standard sku must have static allocation method for ipv6
-				pip.PublicIPAddressPropertiesFormat.PublicIPAllocationMethod = network.Static
-			}
-		} else {
-			pip.PublicIPAddressVersion = network.IPv4
-			klog.V(2).Infof("service(%s): pip(%s) - creating as ipv4 for clusterIP:%v", serviceName, *pip.Name, service.Spec.ClusterIP)
+		pip.PublicIPAddressPropertiesFormat.PublicIPAllocationMethod = network.Dynamic
+		if az.useStandardLoadBalancer() {
+			// standard sku must have static allocation method for ipv6
+			pip.PublicIPAddressPropertiesFormat.PublicIPAllocationMethod = network.Static
 		}
+	} else {
+		pip.PublicIPAddressVersion = network.IPv4
+		klog.V(2).Infof("service(%s): pip(%s) - creating as ipv4 for clusterIP:%v", serviceName, *pip.Name, service.Spec.ClusterIP)
 	}
 
 	klog.V(2).Infof("ensurePublicIPExists for service(%s): pip(%s) - creating", serviceName, *pip.Name)
