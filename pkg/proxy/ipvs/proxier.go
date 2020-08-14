@@ -885,11 +885,13 @@ func (proxier *Proxier) OnServiceSynced() {
 
 // OnEndpointsAdd is called whenever creation of new endpoints object is observed.
 func (proxier *Proxier) OnEndpointsAdd(endpoints *v1.Endpoints) {
+	klog.Infof("on endpoints add: %+v", endpoints)
 	proxier.OnEndpointsUpdate(nil, endpoints)
 }
 
 // OnEndpointsUpdate is called whenever modification of an existing endpoints object is observed.
 func (proxier *Proxier) OnEndpointsUpdate(oldEndpoints, endpoints *v1.Endpoints) {
+	klog.Infof("on endpoints update: %+v, new endpoints: %+v", oldEndpoints, endpoints)
 	if proxier.endpointsChanges.Update(oldEndpoints, endpoints) && proxier.isInitialized() {
 		proxier.Sync()
 	}
@@ -897,6 +899,7 @@ func (proxier *Proxier) OnEndpointsUpdate(oldEndpoints, endpoints *v1.Endpoints)
 
 // OnEndpointsDelete is called whenever deletion of an existing endpoints object is observed.
 func (proxier *Proxier) OnEndpointsDelete(endpoints *v1.Endpoints) {
+	klog.Infof("on endpoints delete: %+v", endpoints)
 	proxier.OnEndpointsUpdate(endpoints, nil)
 }
 
@@ -914,7 +917,9 @@ func (proxier *Proxier) OnEndpointsSynced() {
 // OnEndpointSliceAdd is called whenever creation of a new endpoint slice object
 // is observed.
 func (proxier *Proxier) OnEndpointSliceAdd(endpointSlice *discovery.EndpointSlice) {
+	klog.Infof("on endpoints slice add: %+v", endpointSlice)
 	if proxier.endpointsChanges.EndpointSliceUpdate(endpointSlice, false) && proxier.isInitialized() {
+		klog.Infof("on endpoints slice add syncing")
 		proxier.Sync()
 	}
 }
@@ -922,7 +927,9 @@ func (proxier *Proxier) OnEndpointSliceAdd(endpointSlice *discovery.EndpointSlic
 // OnEndpointSliceUpdate is called whenever modification of an existing endpoint
 // slice object is observed.
 func (proxier *Proxier) OnEndpointSliceUpdate(_, endpointSlice *discovery.EndpointSlice) {
+	klog.Infof("on endpoints slice update: %+v", endpointSlice)
 	if proxier.endpointsChanges.EndpointSliceUpdate(endpointSlice, false) && proxier.isInitialized() {
+		klog.Infof("on endpoints slice update syncing")
 		proxier.Sync()
 	}
 }
@@ -930,7 +937,9 @@ func (proxier *Proxier) OnEndpointSliceUpdate(_, endpointSlice *discovery.Endpoi
 // OnEndpointSliceDelete is called whenever deletion of an existing endpoint slice
 // object is observed.
 func (proxier *Proxier) OnEndpointSliceDelete(endpointSlice *discovery.EndpointSlice) {
+	klog.Infof("on endpoints delete: %+v", endpointSlice)
 	if proxier.endpointsChanges.EndpointSliceUpdate(endpointSlice, true) && proxier.isInitialized() {
+		klog.Infof("on endpoints slice delete syncing")
 		proxier.Sync()
 	}
 }

@@ -219,6 +219,7 @@ func (ect *EndpointChangeTracker) EndpointSliceUpdate(endpointSlice *discovery.E
 	defer ect.lock.Unlock()
 
 	changeNeeded := ect.endpointSliceCache.updatePending(endpointSlice, removeSlice)
+	klog.Infof("change needed: %+v", changeNeeded)
 
 	if changeNeeded {
 		metrics.EndpointChangesPending.Inc()
