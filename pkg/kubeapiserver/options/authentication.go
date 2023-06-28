@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	authenticationapi "k8s.io/apiserver/pkg/authentication/config"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/egressselector"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
@@ -398,15 +400,44 @@ func (o *BuiltInAuthenticationOptions) ToAuthenticationConfig() (kubeauthenticat
 	}
 
 	if o.OIDC != nil {
-		ret.OIDCCAFile = o.OIDC.CAFile
-		ret.OIDCClientID = o.OIDC.ClientID
-		ret.OIDCGroupsClaim = o.OIDC.GroupsClaim
-		ret.OIDCGroupsPrefix = o.OIDC.GroupsPrefix
-		ret.OIDCIssuerURL = o.OIDC.IssuerURL
-		ret.OIDCUsernameClaim = o.OIDC.UsernameClaim
-		ret.OIDCUsernamePrefix = o.OIDC.UsernamePrefix
+		jwtAuthenticator := authenticationapi.JWTAuthenticator{
+			Issuer: authenticationapi.Issuer{
+				URL:       o.OIDC.IssuerURL,
+				ClientIDs: []string{o.OIDC.ClientID},
+			},
+			ClaimMappings: authenticationapi.ClaimMappings{
+				Groups: authenticationapi.PrefixedClaimOrExpression{
+					Prefix: o.OIDC.GroupsPrefix,
+					Claim:  o.OIDC.GroupsClaim,
+				},
+				Username: authenticationapi.PrefixedClaimOrExpression{
+					Prefix: o.OIDC.UsernamePrefix,
+					Claim:  o.OIDC.UsernameClaim,
+				},
+			},
+		}
+
+		if len(o.OIDC.CAFile) != 0 {
+			var err error
+			jwtAuthenticator.Issuer.CertificateAuthority, err = os.ReadFile(o.OIDC.CAFile)
+			if err != nil {
+				return kubeauthenticator.Config{}, err
+			}
+		}
+
+		if len(o.OIDC.RequiredClaims) > 0 {
+			claimValidationRules := make([]authenticationapi.ClaimValidationRule, 0, len(o.OIDC.RequiredClaims))
+			for claim, value := range o.OIDC.RequiredClaims {
+				claimValidationRules = append(claimValidationRules, authenticationapi.ClaimValidationRule{
+					Claim:         claim,
+					RequiredValue: value,
+				})
+			}
+			jwtAuthenticator.ClaimValidationRules = claimValidationRules
+		}
+
+		ret.JWTAuthenticator = jwtAuthenticator
 		ret.OIDCSigningAlgs = o.OIDC.SigningAlgs
-		ret.OIDCRequiredClaims = o.OIDC.RequiredClaims
 	}
 
 	if o.RequestHeader != nil {

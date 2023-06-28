@@ -27,5 +27,6 @@ func ValidateAuthenticationConfiguration(configuration *api.AuthenticationConfig
 	// validate the issuer url is unique across all jwt issuers
 	// validate only single jwt issuer is configured
 	// validate only single client id is configured
+	// validate issuer url is https
 	return nil
 }

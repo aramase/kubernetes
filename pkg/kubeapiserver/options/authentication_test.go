@@ -17,6 +17,7 @@ limitations under the License.
 package options
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/authenticatorfactory"
+	authenticationapi "k8s.io/apiserver/pkg/authentication/config"
 	"k8s.io/apiserver/pkg/authentication/request/headerrequest"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	kubeauthenticator "k8s.io/kubernetes/pkg/kubeapiserver/authenticator"
@@ -228,7 +230,7 @@ func TestToAuthenticationConfig(t *testing.T) {
 			Enable: false,
 		},
 		OIDC: &OIDCAuthenticationOptions{
-			CAFile:        "/testCAFile",
+			CAFile:        "testdata/root.pem",
 			UsernameClaim: "sub",
 			SigningAlgs:   []string{"RS256"},
 			IssuerURL:     "testIssuerURL",
@@ -253,15 +255,22 @@ func TestToAuthenticationConfig(t *testing.T) {
 	}
 
 	expectConfig := kubeauthenticator.Config{
-		APIAudiences:                authenticator.Audiences{"http://foo.bar.com"},
-		Anonymous:                   false,
-		BootstrapToken:              false,
-		ClientCAContentProvider:     nil, // this is nil because you can't compare functions
-		TokenAuthFile:               "/testTokenFile",
-		OIDCIssuerURL:               "testIssuerURL",
-		OIDCClientID:                "testClientID",
-		OIDCCAFile:                  "/testCAFile",
-		OIDCUsernameClaim:           "sub",
+		APIAudiences:            authenticator.Audiences{"http://foo.bar.com"},
+		Anonymous:               false,
+		BootstrapToken:          false,
+		ClientCAContentProvider: nil, // this is nil because you can't compare functions
+		TokenAuthFile:           "/testTokenFile",
+		JWTAuthenticator: authenticationapi.JWTAuthenticator{
+			Issuer: authenticationapi.Issuer{
+				URL:       "testIssuerURL",
+				ClientIDs: []string{"testClientID"},
+			},
+			ClaimMappings: authenticationapi.ClaimMappings{
+				Username: authenticationapi.PrefixedClaimOrExpression{
+					Claim: "sub",
+				},
+			},
+		},
 		OIDCSigningAlgs:             []string{"RS256"},
 		ServiceAccountLookup:        true,
 		ServiceAccountIssuers:       []string{"http://foo.bar.com"},
@@ -279,6 +288,12 @@ func TestToAuthenticationConfig(t *testing.T) {
 			AllowedClientNames:  headerrequest.StaticStringSlice{"kube-aggregator"},
 		},
 	}
+
+	fileBytes, err := os.ReadFile("testdata/root.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectConfig.JWTAuthenticator.Issuer.CertificateAuthority = fileBytes
 
 	resultConfig, err := testOptions.ToAuthenticationConfig()
 	if err != nil {
