@@ -17,16 +17,72 @@ limitations under the License.
 package validation
 
 import (
+	"fmt"
+	"net/url"
+
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	api "k8s.io/apiserver/pkg/authentication/config"
 )
 
+const (
+	authenticationConfigNilErr = "AuthenticationConfiguration can't be nil"
+	atLeastOneRequiredErrFmt   = "at least one %s is required"
+	issuerURLSchemeErr         = "issuer URL scheme must be https"
+	issuerURLRequiredErr       = "issuer URL is required"
+)
+
+var (
+	root = field.NewPath("jwt")
+)
+
 // ValidateAuthenticationConfiguration validates a given AuthenticationConfiguration.
-func ValidateAuthenticationConfiguration(configuration *api.AuthenticationConfiguration) field.ErrorList {
-	// TODO(aramase): add validation for the wiring with existing flag based authentication
-	// validate the issuer url is unique across all jwt issuers
-	// validate only single jwt issuer is configured
-	// validate only single client id is configured
-	// validate issuer url is https
-	return nil
+func ValidateAuthenticationConfiguration(c *api.AuthenticationConfiguration) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if c == nil {
+		allErrs = append(allErrs, field.Required(field.NewPath(""), authenticationConfigNilErr))
+		return allErrs
+	}
+
+	if len(c.JWT) == 0 {
+		allErrs = append(allErrs, field.Required(root, fmt.Sprintf(atLeastOneRequiredErrFmt, root)))
+		return allErrs
+	}
+
+	seenIssuers := sets.NewString()
+	for i, a := range c.JWT {
+		fldPath := root.Index(i)
+
+		if seenIssuers.Has(a.Issuer.URL) {
+			allErrs = append(allErrs, field.Duplicate(fldPath.Child("issuer", "url"), a.Issuer.URL))
+			continue
+		}
+		seenIssuers.Insert(a.Issuer.URL)
+
+		allErrs = append(allErrs, validateJWTAuthenticator(a, fldPath)...)
+	}
+
+	return allErrs
+}
+
+func validateJWTAuthenticator(authenticator api.JWTAuthenticator, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if authenticator.Issuer.URL == "" {
+		allErrs = append(allErrs, field.Required(fldPath.Child("issuer", "url"), issuerURLRequiredErr))
+	} else {
+		u, err := url.Parse(authenticator.Issuer.URL)
+		if err != nil {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("issuer", "url"), authenticator.Issuer.URL, err.Error()))
+		} else if u.Scheme != "https" {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("issuer", "url"), authenticator.Issuer.URL, issuerURLSchemeErr))
+		}
+	}
+
+	if len(authenticator.Issuer.ClientIDs) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("issuer", "clientIDs"), fmt.Sprintf(atLeastOneRequiredErrFmt, fldPath.Child("issuer", "clientIDs"))))
+	}
+
+	return allErrs
 }
