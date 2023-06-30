@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authenticationapi "k8s.io/apiserver/pkg/authentication/config"
+	authenticationapivalidation "k8s.io/apiserver/pkg/authentication/config/validation"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/egressselector"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
@@ -399,7 +400,7 @@ func (o *BuiltInAuthenticationOptions) ToAuthenticationConfig() (kubeauthenticat
 		}
 	}
 
-	if o.OIDC != nil {
+	if o.OIDC != nil && len(o.OIDC.IssuerURL) > 0 && len(o.OIDC.ClientID) > 0 {
 		jwtAuthenticator := authenticationapi.JWTAuthenticator{
 			Issuer: authenticationapi.Issuer{
 				URL:       o.OIDC.IssuerURL,
@@ -436,7 +437,13 @@ func (o *BuiltInAuthenticationOptions) ToAuthenticationConfig() (kubeauthenticat
 			jwtAuthenticator.ClaimValidationRules = claimValidationRules
 		}
 
-		ret.JWTAuthenticator = jwtAuthenticator
+		authConfig := &authenticationapi.AuthenticationConfiguration{
+			JWT: []authenticationapi.JWTAuthenticator{jwtAuthenticator},
+		}
+		if fieldErrList := authenticationapivalidation.ValidateAuthenticationConfiguration(authConfig); fieldErrList.ToAggregate() != nil {
+			return kubeauthenticator.Config{}, fieldErrList.ToAggregate()
+		}
+		ret.AuthenticationConfig = authConfig
 		ret.OIDCSigningAlgs = o.OIDC.SigningAlgs
 	}
 

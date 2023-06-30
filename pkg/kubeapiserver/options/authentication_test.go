@@ -52,7 +52,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -65,7 +65,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
 				Issuers:  []string{"http://foo.bar.com"},
@@ -78,7 +78,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -91,7 +91,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -104,7 +104,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -117,7 +117,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -130,7 +130,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -143,7 +143,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -158,7 +158,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -173,7 +173,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			testOIDC: &OIDCAuthenticationOptions{
 				UsernameClaim: "sub",
 				SigningAlgs:   []string{"RS256"},
-				IssuerURL:     "testIssuerURL",
+				IssuerURL:     "https://testIssuerURL",
 				ClientID:      "testClientID",
 			},
 			testSA: &ServiceAccountAuthenticationOptions{
@@ -233,7 +233,7 @@ func TestToAuthenticationConfig(t *testing.T) {
 			CAFile:        "testdata/root.pem",
 			UsernameClaim: "sub",
 			SigningAlgs:   []string{"RS256"},
-			IssuerURL:     "testIssuerURL",
+			IssuerURL:     "https://testIssuerURL",
 			ClientID:      "testClientID",
 		},
 		RequestHeader: &apiserveroptions.RequestHeaderAuthenticationOptions{
@@ -260,14 +260,18 @@ func TestToAuthenticationConfig(t *testing.T) {
 		BootstrapToken:          false,
 		ClientCAContentProvider: nil, // this is nil because you can't compare functions
 		TokenAuthFile:           "/testTokenFile",
-		JWTAuthenticator: authenticationapi.JWTAuthenticator{
-			Issuer: authenticationapi.Issuer{
-				URL:       "testIssuerURL",
-				ClientIDs: []string{"testClientID"},
-			},
-			ClaimMappings: authenticationapi.ClaimMappings{
-				Username: authenticationapi.PrefixedClaimOrExpression{
-					Claim: "sub",
+		AuthenticationConfig: &authenticationapi.AuthenticationConfiguration{
+			JWT: []authenticationapi.JWTAuthenticator{
+				{
+					Issuer: authenticationapi.Issuer{
+						URL:       "https://testIssuerURL",
+						ClientIDs: []string{"testClientID"},
+					},
+					ClaimMappings: authenticationapi.ClaimMappings{
+						Username: authenticationapi.PrefixedClaimOrExpression{
+							Claim: "sub",
+						},
+					},
 				},
 			},
 		},
@@ -293,7 +297,7 @@ func TestToAuthenticationConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectConfig.JWTAuthenticator.Issuer.CertificateAuthority = fileBytes
+	expectConfig.AuthenticationConfig.JWT[0].Issuer.CertificateAuthority = fileBytes
 
 	resultConfig, err := testOptions.ToAuthenticationConfig()
 	if err != nil {

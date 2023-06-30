@@ -55,7 +55,7 @@ type Config struct {
 	BootstrapToken bool
 
 	TokenAuthFile               string
-	JWTAuthenticator            authenticationapi.JWTAuthenticator
+	AuthenticationConfig        *authenticationapi.AuthenticationConfiguration
 	OIDCSigningAlgs             []string
 	ServiceAccountKeyFiles      []string
 	ServiceAccountLookup        bool
@@ -146,20 +146,22 @@ func (config Config) New() (authenticator.Request, *spec.SecurityDefinitions, er
 	// cache misses for all requests using the other. While the service account plugin
 	// simply returns an error, the OpenID Connect plugin may query the provider to
 	// update the keys, causing performance hits.
-	if len(config.JWTAuthenticator.Issuer.URL) > 0 && len(config.JWTAuthenticator.Issuer.ClientIDs) > 0 {
-		oidcCAContent, err := dynamiccertificates.NewStaticCAContent("oidc-authenticator", config.JWTAuthenticator.Issuer.CertificateAuthority)
-		if err != nil {
-			return nil, nil, err
+	if config.AuthenticationConfig != nil {
+		for _, jwtAuthenticator := range config.AuthenticationConfig.JWT {
+			oidcCAContent, err := dynamiccertificates.NewStaticCAContent("oidc-authenticator", jwtAuthenticator.Issuer.CertificateAuthority)
+			if err != nil {
+				return nil, nil, err
+			}
+			oidcAuth, err := newAuthenticatorFromOIDCIssuerURL(oidc.Options{
+				JWTAuthenticator:     jwtAuthenticator,
+				CAContentProvider:    oidcCAContent,
+				SupportedSigningAlgs: config.OIDCSigningAlgs,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			tokenAuthenticators = append(tokenAuthenticators, authenticator.WrapAudienceAgnosticToken(config.APIAudiences, oidcAuth))
 		}
-		oidcAuth, err := newAuthenticatorFromOIDCIssuerURL(oidc.Options{
-			JWTAuthenticator:     config.JWTAuthenticator,
-			CAContentProvider:    oidcCAContent,
-			SupportedSigningAlgs: config.OIDCSigningAlgs,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		tokenAuthenticators = append(tokenAuthenticators, authenticator.WrapAudienceAgnosticToken(config.APIAudiences, oidcAuth))
 	}
 
 	if len(config.WebhookTokenAuthnConfigFile) > 0 {
