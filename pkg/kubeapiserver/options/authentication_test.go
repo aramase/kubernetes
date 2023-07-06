@@ -38,11 +38,12 @@ import (
 
 func TestAuthenticationValidate(t *testing.T) {
 	testCases := []struct {
-		name        string
-		testOIDC    *OIDCAuthenticationOptions
-		testSA      *ServiceAccountAuthenticationOptions
-		testWebHook *WebHookAuthenticationOptions
-		expectErr   string
+		name                         string
+		testOIDC                     *OIDCAuthenticationOptions
+		testSA                       *ServiceAccountAuthenticationOptions
+		testWebHook                  *WebHookAuthenticationOptions
+		testAuthenticationConfigFile string
+		expectErr                    string
 	}{
 		{
 			name: "test when OIDC and ServiceAccounts are nil",
@@ -194,6 +195,22 @@ func TestAuthenticationValidate(t *testing.T) {
 			},
 			expectErr: "number of webhook retry attempts must be greater than 0, but is: 0",
 		},
+		{
+			name:                         "test when authentication config file is set without feature gate",
+			testAuthenticationConfigFile: "configfile",
+			expectErr:                    "Set --feature-gates=StructuredAuthenticationConfiguration=true to use authentication-config file",
+		},
+		{
+			name:                         "test when authentication config file and oidc-* flags are set",
+			testAuthenticationConfigFile: "configfile",
+			testOIDC: &OIDCAuthenticationOptions{
+				UsernameClaim: "sub",
+				SigningAlgs:   []string{"RS256"},
+				IssuerURL:     "https://testIssuerURL",
+				ClientID:      "testClientID",
+			},
+			expectErr: "authentication-config file and oidc-* flags are mutually exclusive",
+		},
 	}
 
 	for _, testcase := range testCases {
@@ -202,6 +219,7 @@ func TestAuthenticationValidate(t *testing.T) {
 			options.OIDC = testcase.testOIDC
 			options.ServiceAccounts = testcase.testSA
 			options.WebHook = testcase.testWebHook
+			options.AuthenticationConfigFile = testcase.testAuthenticationConfigFile
 
 			errs := options.Validate()
 			if len(errs) > 0 && (!strings.Contains(utilerrors.NewAggregate(errs).Error(), testcase.expectErr) || testcase.expectErr == "") {
@@ -403,4 +421,141 @@ func TestBuiltInAuthenticationOptionsAddFlags(t *testing.T) {
 	if !reflect.DeepEqual(opts, expected) {
 		t.Error(cmp.Diff(opts, expected))
 	}
+}
+
+func TestTestToAuthenticationConfig_OIDC(t *testing.T) {
+	testCases := []struct {
+		name            string
+		authnConfigFile func() string
+		opts            *BuiltInAuthenticationOptions
+		expectConfig    kubeauthenticator.Config
+	}{
+		{
+			name:            "oidc-* flags",
+			authnConfigFile: func() string { return "" },
+			opts: &BuiltInAuthenticationOptions{
+				OIDC: &OIDCAuthenticationOptions{
+					ClientID:       "testClientID",
+					IssuerURL:      "https://testIssuerURL",
+					UsernameClaim:  "sub",
+					UsernamePrefix: "-",
+					SigningAlgs:    []string{"RS256"},
+					RequiredClaims: map[string]string{"foo": "bar", "baz": "qux"},
+				},
+			},
+			expectConfig: kubeauthenticator.Config{
+				AuthenticationConfig: &authenticationapi.AuthenticationConfiguration{
+					JWT: []authenticationapi.JWTAuthenticator{
+						{
+							Issuer: authenticationapi.Issuer{
+								URL:       "https://testIssuerURL",
+								ClientIDs: []string{"testClientID"},
+							},
+							ClaimMappings: authenticationapi.ClaimMappings{
+								Username: authenticationapi.PrefixedClaimOrExpression{
+									Claim:  "sub",
+									Prefix: "-",
+								},
+							},
+							ClaimValidationRules: []authenticationapi.ClaimValidationRule{
+								{
+									Claim:         "foo",
+									RequiredValue: "bar",
+								},
+								{
+									Claim:         "baz",
+									RequiredValue: "qux",
+								},
+							},
+						},
+					},
+				},
+				OIDCSigningAlgs: []string{"RS256"},
+			},
+		},
+		{
+			name: "authentication-config file",
+			authnConfigFile: func() string {
+				config := `
+apiVersion: apiserver.config.k8s.io/v1alpha1
+kind: AuthenticationConfiguration
+jwt:
+- issuer:
+    url: https://testIssuerURL
+    clientIDs:
+    - testClientID
+  claimMappings:
+    username:
+      claim: sub
+      prefix: "-"
+  claimValidationRules:
+  - claim: foo
+    requiredValue: bar
+  - claim: baz
+    requiredValue: qux
+`
+				return writeTempFile(t, config)
+			},
+			opts: &BuiltInAuthenticationOptions{},
+			expectConfig: kubeauthenticator.Config{
+				AuthenticationConfig: &authenticationapi.AuthenticationConfiguration{
+					JWT: []authenticationapi.JWTAuthenticator{
+						{
+							Issuer: authenticationapi.Issuer{
+								URL:       "https://testIssuerURL",
+								ClientIDs: []string{"testClientID"},
+							},
+							ClaimMappings: authenticationapi.ClaimMappings{
+								Username: authenticationapi.PrefixedClaimOrExpression{
+									Claim:  "sub",
+									Prefix: "-",
+								},
+							},
+							ClaimValidationRules: []authenticationapi.ClaimValidationRule{
+								{
+									Claim:         "foo",
+									RequiredValue: "bar",
+								},
+								{
+									Claim:         "baz",
+									RequiredValue: "qux",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, testcase := range testCases {
+		t.Run(testcase.name, func(t *testing.T) {
+			testcase.opts.AuthenticationConfigFile = testcase.authnConfigFile()
+			resultConfig, err := testcase.opts.ToAuthenticationConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(resultConfig, testcase.expectConfig) {
+				t.Error(cmp.Diff(resultConfig, testcase.expectConfig))
+			}
+		})
+	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	file, err := os.CreateTemp("", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(file.Name()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err := os.WriteFile(file.Name(), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return file.Name()
 }

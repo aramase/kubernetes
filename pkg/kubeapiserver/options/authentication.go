@@ -31,10 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	authenticationapi "k8s.io/apiserver/pkg/authentication/config"
+	authenticationapiloader "k8s.io/apiserver/pkg/authentication/config/load"
 	authenticationapivalidation "k8s.io/apiserver/pkg/authentication/config/validation"
+	genericfeatures "k8s.io/apiserver/pkg/features"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/egressselector"
 	genericoptions "k8s.io/apiserver/pkg/server/options"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	cliflag "k8s.io/component-base/cli/flag"
@@ -48,15 +51,16 @@ import (
 
 // BuiltInAuthenticationOptions contains all build-in authentication options for API Server
 type BuiltInAuthenticationOptions struct {
-	APIAudiences    []string
-	Anonymous       *AnonymousAuthenticationOptions
-	BootstrapToken  *BootstrapTokenAuthenticationOptions
-	ClientCert      *genericoptions.ClientCertAuthenticationOptions
-	OIDC            *OIDCAuthenticationOptions
-	RequestHeader   *genericoptions.RequestHeaderAuthenticationOptions
-	ServiceAccounts *ServiceAccountAuthenticationOptions
-	TokenFile       *TokenFileAuthenticationOptions
-	WebHook         *WebHookAuthenticationOptions
+	APIAudiences             []string
+	Anonymous                *AnonymousAuthenticationOptions
+	BootstrapToken           *BootstrapTokenAuthenticationOptions
+	ClientCert               *genericoptions.ClientCertAuthenticationOptions
+	OIDC                     *OIDCAuthenticationOptions
+	RequestHeader            *genericoptions.RequestHeaderAuthenticationOptions
+	ServiceAccounts          *ServiceAccountAuthenticationOptions
+	TokenFile                *TokenFileAuthenticationOptions
+	WebHook                  *WebHookAuthenticationOptions
+	AuthenticationConfigFile string
 
 	TokenSuccessCacheTTL time.Duration
 	TokenFailureCacheTTL time.Duration
@@ -189,6 +193,16 @@ func (o *BuiltInAuthenticationOptions) WithWebHook() *BuiltInAuthenticationOptio
 func (o *BuiltInAuthenticationOptions) Validate() []error {
 	var allErrors []error
 
+	if len(o.AuthenticationConfigFile) > 0 {
+		if !utilfeature.DefaultFeatureGate.Enabled(genericfeatures.StructuredAuthenticationConfiguration) {
+			allErrors = append(allErrors, fmt.Errorf("Set --feature-gates=%s=true to use authentication-config file", genericfeatures.StructuredAuthenticationConfiguration))
+		}
+		// Authentication config file and oidc-* flags are mutually exclusive
+		if o.OIDC != nil && (len(o.OIDC.IssuerURL) > 0 || len(o.OIDC.ClientID) > 0) {
+			allErrors = append(allErrors, fmt.Errorf("authentication-config file and oidc-* flags are mutually exclusive"))
+		}
+	}
+
 	if o.OIDC != nil && (len(o.OIDC.IssuerURL) > 0) != (len(o.OIDC.ClientID) > 0) {
 		allErrors = append(allErrors, fmt.Errorf("oidc-issuer-url and oidc-client-id should be specified together"))
 	}
@@ -312,6 +326,12 @@ func (o *BuiltInAuthenticationOptions) AddFlags(fs *pflag.FlagSet) {
 			"A key=value pair that describes a required claim in the ID Token. "+
 			"If set, the claim is verified to be present in the ID Token with a matching value. "+
 			"Repeat this flag to specify multiple claims.")
+
+		fs.StringVar(&o.AuthenticationConfigFile, "authentication-config", o.AuthenticationConfigFile, ""+
+			"File with Authentication Configuration to configure the JWT Token authenticator. "+
+			"Note: This feature is in Alpha since v1.28."+
+			"The StructuredAuthenticationConfiguration feature needs to be set to true for enabling this feature."+
+			"This feature is mutually exclusive with the oidc-* flags.")
 	}
 
 	if o.RequestHeader != nil {
@@ -400,7 +420,14 @@ func (o *BuiltInAuthenticationOptions) ToAuthenticationConfig() (kubeauthenticat
 		}
 	}
 
-	if o.OIDC != nil && len(o.OIDC.IssuerURL) > 0 && len(o.OIDC.ClientID) > 0 {
+	// When the StructureAuthenticationConfiguration feature is enabled and the authentication config file is provided,
+	// load the authentication config from the file.
+	if len(o.AuthenticationConfigFile) > 0 {
+		var err error
+		if ret.AuthenticationConfig, err = authenticationapiloader.LoadFromFile(o.AuthenticationConfigFile); err != nil {
+			return kubeauthenticator.Config{}, err
+		}
+	} else if o.OIDC != nil && len(o.OIDC.IssuerURL) > 0 && len(o.OIDC.ClientID) > 0 {
 		jwtAuthenticator := authenticationapi.JWTAuthenticator{
 			Issuer: authenticationapi.Issuer{
 				URL:       o.OIDC.IssuerURL,
@@ -437,14 +464,16 @@ func (o *BuiltInAuthenticationOptions) ToAuthenticationConfig() (kubeauthenticat
 			jwtAuthenticator.ClaimValidationRules = claimValidationRules
 		}
 
-		authConfig := &authenticationapi.AuthenticationConfiguration{
+		ret.AuthenticationConfig = &authenticationapi.AuthenticationConfiguration{
 			JWT: []authenticationapi.JWTAuthenticator{jwtAuthenticator},
 		}
-		if fieldErrList := authenticationapivalidation.ValidateAuthenticationConfiguration(authConfig); fieldErrList.ToAggregate() != nil {
+		ret.OIDCSigningAlgs = o.OIDC.SigningAlgs
+	}
+
+	if ret.AuthenticationConfig != nil {
+		if fieldErrList := authenticationapivalidation.ValidateAuthenticationConfiguration(ret.AuthenticationConfig); fieldErrList.ToAggregate() != nil {
 			return kubeauthenticator.Config{}, fieldErrList.ToAggregate()
 		}
-		ret.AuthenticationConfig = authConfig
-		ret.OIDCSigningAlgs = o.OIDC.SigningAlgs
 	}
 
 	if o.RequestHeader != nil {

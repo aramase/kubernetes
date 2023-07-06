@@ -148,9 +148,13 @@ func (config Config) New() (authenticator.Request, *spec.SecurityDefinitions, er
 	// update the keys, causing performance hits.
 	if config.AuthenticationConfig != nil {
 		for _, jwtAuthenticator := range config.AuthenticationConfig.JWT {
-			oidcCAContent, err := dynamiccertificates.NewStaticCAContent("oidc-authenticator", jwtAuthenticator.Issuer.CertificateAuthority)
-			if err != nil {
-				return nil, nil, err
+			var oidcCAContent oidc.CAContentProvider
+			if jwtAuthenticator.Issuer.CertificateAuthority != nil {
+				var oidcCAError error
+				oidcCAContent, oidcCAError = dynamiccertificates.NewStaticCAContent("oidc-authenticator", jwtAuthenticator.Issuer.CertificateAuthority)
+				if oidcCAError != nil {
+					return nil, nil, oidcCAError
+				}
 			}
 			oidcAuth, err := newAuthenticatorFromOIDCIssuerURL(oidc.Options{
 				JWTAuthenticator:     jwtAuthenticator,
