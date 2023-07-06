@@ -82,6 +82,10 @@ func validateJWTAuthenticator(authenticator api.JWTAuthenticator, fldPath *field
 
 	if len(authenticator.Issuer.ClientIDs) == 0 {
 		allErrs = append(allErrs, field.Required(fldPath.Child("issuer", "clientIDs"), fmt.Sprintf(atLeastOneRequiredErrFmt, fldPath.Child("issuer", "clientIDs"))))
+	} else if len(authenticator.Issuer.ClientIDs) > 1 {
+		// This restriction is only for the parity with the current implementation using --oidc-client-id flag.
+		// We will relax this restriction in the follow up as we add support for multiple clientIDs.
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("issuer", "clientIDs"), "only one clientID is allowed"))
 	}
 
 	return allErrs

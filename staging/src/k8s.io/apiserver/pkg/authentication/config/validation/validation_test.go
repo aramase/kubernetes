@@ -136,6 +136,18 @@ func TestValidateJWTAuthenticator(t *testing.T) {
 			},
 		},
 		{
+			name: "more than one client id",
+			in: api.JWTAuthenticator{
+				Issuer: api.Issuer{
+					URL:       "https://issuer-url",
+					ClientIDs: []string{"client-id", "another-client-id"},
+				},
+			},
+			want: field.ErrorList{
+				field.Forbidden(jwtField.Child("issuer", "clientIDs"), "only one clientID is allowed"),
+			},
+		},
+		{
 			name: "valid jwt authenticator",
 			in: api.JWTAuthenticator{
 				Issuer: api.Issuer{
