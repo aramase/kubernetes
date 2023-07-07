@@ -43,6 +43,9 @@ type Issuer struct {
 type ClaimValidationRule struct {
 	Claim         string
 	RequiredValue string
+
+	Expression string
+	Message    string
 }
 
 type ClaimMappings struct {

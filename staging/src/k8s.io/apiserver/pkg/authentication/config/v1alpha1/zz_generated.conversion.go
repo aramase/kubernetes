@@ -152,6 +152,8 @@ func Convert_config_ClaimMappings_To_v1alpha1_ClaimMappings(in *config.ClaimMapp
 func autoConvert_v1alpha1_ClaimValidationRule_To_config_ClaimValidationRule(in *ClaimValidationRule, out *config.ClaimValidationRule, s conversion.Scope) error {
 	out.Claim = in.Claim
 	out.RequiredValue = in.RequiredValue
+	out.Expression = in.Expression
+	out.Message = in.Message
 	return nil
 }
 
@@ -163,6 +165,8 @@ func Convert_v1alpha1_ClaimValidationRule_To_config_ClaimValidationRule(in *Clai
 func autoConvert_config_ClaimValidationRule_To_v1alpha1_ClaimValidationRule(in *config.ClaimValidationRule, out *ClaimValidationRule, s conversion.Scope) error {
 	out.Claim = in.Claim
 	out.RequiredValue = in.RequiredValue
+	out.Expression = in.Expression
+	out.Message = in.Message
 	return nil
 }
 

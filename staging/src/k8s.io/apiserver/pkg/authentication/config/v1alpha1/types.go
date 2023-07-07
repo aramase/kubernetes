@@ -82,6 +82,18 @@ type ClaimValidationRule struct {
 	// Same as --oidc-required-claim flag.
 	// +optional
 	RequiredValue string `json:"requiredValue"`
+
+	// expression is a logical expression that is written in CEL https://github.com/google/cel-go.
+	// Must return true for the validation to pass.
+	// Mutually exclusive with claim and requiredValue.
+	// +optional
+	Expression string `json:"expression"`
+	// message customizes the returned error message when expression returns false.
+	// Mutually exclusive with claim and requiredValue.
+	// Note that messageExpression is explicitly not supported to avoid
+	// misconfigured expressions from leaking JWT payload contents.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 type ClaimMappings struct {
