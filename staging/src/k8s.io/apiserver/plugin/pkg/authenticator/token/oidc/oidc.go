@@ -659,3 +659,10 @@ func (c claims) hasClaim(name string) bool {
 	}
 	return true
 }
+
+// TODO(aramase)
+// 1. Wire up CEL to the authenticator.
+// 2. Add tests for the CEL authenticator.
+// 3. Determine runtime budget for CEL expressions.
+// 4. Wire up CEL compile validation in validation.go.
+// 5. Add userInfo type to CEL compiler.
