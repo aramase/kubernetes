@@ -22,7 +22,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 	api "k8s.io/apiserver/pkg/authentication/config"
+	"k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
+	"k8s.io/apiserver/plugin/pkg/authenticator/token/oidc"
 )
 
 const (
@@ -88,5 +92,73 @@ func validateJWTAuthenticator(authenticator api.JWTAuthenticator, fldPath *field
 		allErrs = append(allErrs, field.Forbidden(fldPath.Child("issuer", "clientIDs"), "only one clientID is allowed"))
 	}
 
+	if authenticator.ClaimValidationRules != nil {
+		allErrs = append(allErrs, validateClaimValidationRules(authenticator.ClaimValidationRules, validationOptions{}, fldPath.Child("claimValidationRules"))...)
+	}
+
 	return allErrs
 }
+
+func validateClaimValidationRules(rules []api.ClaimValidationRule, opts validationOptions, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	for i, rule := range rules {
+		fldPath := fldPath.Index(i)
+
+		if rule.Claim == "" && rule.Expression == "" {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("expression"), "claim and expression can't be specified at the same time"))
+			continue
+		}
+		if rule.Expression != "" {
+			allErrs = append(allErrs, validateClaimValidationRuleExpression(rule.Expression, opts, fldPath)...)
+		}
+	}
+
+	return allErrs
+}
+
+func validateCELCondition(expression authenticationcel.ExpressionAccessor, envType environment.Type, fldPath *field.Path) field.ErrorList {
+	var allErrors field.ErrorList
+
+	result := compiler.CompileCELExpression(expression, envType)
+	if result.Error != nil {
+		switch result.Error.Type {
+		case cel.ErrorTypeRequired:
+			allErrors = append(allErrors, field.Required(fldPath, result.Error.Detail))
+		case cel.ErrorTypeInvalid:
+			allErrors = append(allErrors, field.Invalid(fldPath, expression.GetExpression(), result.Error.Detail))
+		case cel.ErrorTypeInternal:
+			allErrors = append(allErrors, field.InternalError(fldPath, result.Error))
+		default:
+			allErrors = append(allErrors, field.InternalError(fldPath, fmt.Errorf("unsupported error type: %w", result.Error)))
+		}
+	}
+	return allErrors
+}
+
+type validationOptions struct {
+	preexistingExpressions preexistingExpressions
+}
+
+type preexistingExpressions struct {
+	claimValidationRuleExpressions sets.Set[string]
+}
+
+func newPreexistingExpressions() preexistingExpressions {
+	return preexistingExpressions{
+		claimValidationRuleExpressions: sets.New[string](),
+	}
+}
+
+func validateClaimValidationRuleExpression(expression string, opts validationOptions, fldPath *field.Path) field.ErrorList {
+	envType := environment.NewExpressions
+	if opts.preexistingExpressions.claimValidationRuleExpressions.Has(expression) {
+		envType = environment.StoredExpressions
+	}
+
+	return validateCELCondition(&oidc.ClaimValidationCondition{
+		Expression: expression,
+	}, envType, fldPath)
+}
+
+var compiler = authenticationcel.NewCompiler(environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()))

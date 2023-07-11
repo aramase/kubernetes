@@ -1849,6 +1849,78 @@ func TestToken(t *testing.T) {
 			}`, valid.Unix()),
 			wantErr: `oidc: verify token: oidc: expected audience "my-client" got ["my-wrong-client"]`,
 		},
+		{
+			name: "claim validation with expression fails",
+			options: Options{
+				JWTAuthenticator: authenticationapi.JWTAuthenticator{
+					Issuer: authenticationapi.Issuer{
+						URL:       "https://auth.example.com",
+						ClientIDs: []string{"my-client"},
+					},
+					ClaimMappings: authenticationapi.ClaimMappings{
+						Username: authenticationapi.PrefixedClaimOrExpression{
+							Claim: "username",
+						},
+					},
+					ClaimValidationRules: []authenticationapi.ClaimValidationRule{
+						{
+							Expression: "claims.hd == 'example.com'",
+							Message:    "the hd claim must be set to example.com",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"username": "jane",
+				"hd": "not-example.com",
+				"aud": "my-client",
+				"exp": %d
+			}`, valid.Unix()),
+			wantErr: `oidc: claim validation filter: message: the hd claim must be set to example.com`,
+		},
+		{
+			name: "claim validation with expression passes",
+			options: Options{
+				JWTAuthenticator: authenticationapi.JWTAuthenticator{
+					Issuer: authenticationapi.Issuer{
+						URL:       "https://auth.example.com",
+						ClientIDs: []string{"my-client"},
+					},
+					ClaimMappings: authenticationapi.ClaimMappings{
+						Username: authenticationapi.PrefixedClaimOrExpression{
+							Claim: "username",
+						},
+					},
+					ClaimValidationRules: []authenticationapi.ClaimValidationRule{
+						{
+							Expression: "claims.hd == 'example.com'",
+							Message:    "the hd claim must be set to example.com",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"username": "jane",
+				"hd": "example.com",
+				"aud": "my-client",
+				"exp": %d
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, test.run)

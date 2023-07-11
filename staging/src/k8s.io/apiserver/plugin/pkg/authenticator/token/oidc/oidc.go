@@ -43,12 +43,16 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc"
+	celtypes "github.com/google/cel-go/common/types"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/apiserver/pkg/authentication/cel"
 	authenticationapi "k8s.io/apiserver/pkg/authentication/config"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/cel/environment"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog/v2"
 )
@@ -166,6 +170,9 @@ type Authenticator struct {
 
 	// resolver is used to resolve distributed claims.
 	resolver *claimResolver
+
+	filterCompiler        cel.FilterCompiler
+	claimValidationFilter cel.Filter
 }
 
 func (a *Authenticator) setVerifier(v *oidc.IDTokenVerifier) {
@@ -274,6 +281,7 @@ func New(opts Options) (*Authenticator, error) {
 		jwtAuthenticator: opts.JWTAuthenticator,
 		cancel:           cancel,
 		resolver:         resolver,
+		filterCompiler:   cel.NewFilterCompiler(environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())),
 	}
 
 	if opts.KeySet != nil {
@@ -293,6 +301,22 @@ func New(opts Options) (*Authenticator, error) {
 			authenticator.setVerifier(verifier)
 			return true, nil
 		}, ctx.Done())
+	}
+
+	if len(opts.JWTAuthenticator.ClaimValidationRules) > 0 {
+		var expressionAccessors []cel.ExpressionAccessor
+		for _, rule := range opts.JWTAuthenticator.ClaimValidationRules {
+			if rule.Expression != "" {
+				expressionAccessors = append(expressionAccessors, &ClaimValidationCondition{
+					Expression: rule.Expression,
+					Message:    rule.Message,
+				})
+			}
+		}
+
+		if len(expressionAccessors) > 0 {
+			authenticator.claimValidationFilter = authenticator.filterCompiler.Compile(expressionAccessors, environment.StoredExpressions)
+		}
 	}
 
 	return authenticator, nil
@@ -580,17 +604,53 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*a
 		claim := claimValidationRule.Claim
 		value := claimValidationRule.RequiredValue
 
-		if !c.hasClaim(claim) {
-			return nil, false, fmt.Errorf("oidc: required claim %s not present in ID token", claim)
+		if claim != "" {
+			if !c.hasClaim(claim) {
+				return nil, false, fmt.Errorf("oidc: required claim %s not present in ID token", claim)
+			}
+
+			// NOTE: Only string values are supported as valid required claim values.
+			var claimValue string
+			if err := c.unmarshalClaim(claim, &claimValue); err != nil {
+				return nil, false, fmt.Errorf("oidc: parse claim %s: %v", claim, err)
+			}
+			if claimValue != value {
+				return nil, false, fmt.Errorf("oidc: required claim %s value does not match. Got = %s, want = %s", claim, claimValue, value)
+			}
+		}
+	}
+
+	if a.claimValidationFilter != nil {
+		claims := make(map[string]any)
+		for k := range c {
+			var claimValue any
+			if err := c.unmarshalClaim(k, &claimValue); err != nil {
+				return nil, false, fmt.Errorf("oidc: parse claim %s: %v", k, err)
+			}
+			claims[k] = claimValue
 		}
 
-		// NOTE: Only string values are supported as valid required claim values.
-		var claimValue string
-		if err := c.unmarshalClaim(claim, &claimValue); err != nil {
-			return nil, false, fmt.Errorf("oidc: parse claim %s: %v", claim, err)
+		// TODO(aramase): handle runtime budget
+		evalResults, _, err := a.claimValidationFilter.ForInput(ctx, claims, 10000)
+		if err != nil {
+			return nil, false, fmt.Errorf("oidc: claim validation filter: %v", err)
 		}
-		if claimValue != value {
-			return nil, false, fmt.Errorf("oidc: required claim %s value does not match. Got = %s, want = %s", claim, claimValue, value)
+		var errs []error
+		for _, evalResult := range evalResults {
+			claimValidation, ok := evalResult.ExpressionAccessor.(*ClaimValidationCondition)
+			if !ok {
+				errs = append(errs, fmt.Errorf("oidc: claim validation filter: unexpected expression type %T", evalResult.ExpressionAccessor))
+			}
+			if evalResult.Error != nil {
+				errs = append(errs, fmt.Errorf("oidc: claim validation filter evaluation: %v", evalResult.Error))
+			}
+			if evalResult.EvalResult != celtypes.True {
+				errs = append(errs, fmt.Errorf("message: %s", claimValidation.Message))
+			}
+		}
+
+		if len(errs) > 0 {
+			return nil, false, fmt.Errorf("oidc: claim validation filter: %v", utilerrors.NewAggregate(errs).Error())
 		}
 	}
 
@@ -662,6 +722,7 @@ func (c claims) hasClaim(name string) bool {
 
 // TODO(aramase)
 // 1. Wire up CEL to the authenticator.
+//	- Done: Wired ClaimValidationFilter to the authenticator.
 // 2. Add tests for the CEL authenticator.
 // 3. Determine runtime budget for CEL expressions.
 // 4. Wire up CEL compile validation in validation.go.
