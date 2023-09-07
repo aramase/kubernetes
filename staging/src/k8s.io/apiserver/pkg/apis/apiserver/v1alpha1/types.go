@@ -192,6 +192,13 @@ type JWTAuthenticator struct {
 	// claimMappings points claims of a token to be treated as user attributes.
 	// +required
 	ClaimMappings ClaimMappings `json:"claimMappings"`
+
+	// userValidationRules are rules that are applied to final userInfo before completing authentication.
+	// These allow invariants to be applied to incoming identities such as preventing the
+	// use of the system: prefix that is commonly used by Kubernetes components.
+	// The validation rules are logically ANDed together and must all return true for the validation to pass.
+	// +optional
+	UserValidationRules []UserValidationRule `json:"userValidationRules,omitempty"`
 }
 
 // Issuer provides the configuration for a external provider specific settings.
@@ -225,14 +232,36 @@ type ClaimValidationRule struct {
 	// claim is the name of a required claim.
 	// Same as --oidc-required-claim flag.
 	// Only string claim keys are supported.
-	// +required
+	// Mutually exclusive with expression and message.
+	// +optional
 	Claim string `json:"claim"`
 	// requiredValue is the value of a required claim.
 	// Same as --oidc-required-claim flag.
 	// Only string claim values are supported.
 	// If claim is set and requiredValue is not set, the claim must be present with a value set to the empty string.
+	// Mutually exclusive with expression and message.
 	// +optional
 	RequiredValue string `json:"requiredValue"`
+
+	// expression represents the expression which will be evaluated by CEL.
+	// Must produce a boolean.
+	//
+	// CEL expressions have access to the contents of the token claims, organized into CEL variable:
+	// - 'claims' is a map of claim names to claim values.
+	//   For example, a variable named 'sub' can be accessed as 'claims.sub'.
+	//   Nested claims can be accessed using dot notation, e.g. 'claims.email.verified'.
+	// Must return true for the validation to pass.
+	//
+	// Documentation on CEL: https://kubernetes.io/docs/reference/using-api/cel/
+	//
+	// Mutually exclusive with claim and requiredValue.
+	// +optional
+	Expression string `json:"expression"`
+	// message customizes the returned error message when expression returns false.
+	// message is a literal string.
+	// Mutually exclusive with claim and requiredValue.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // ClaimMappings provides the configuration for claim mapping
@@ -254,19 +283,131 @@ type ClaimMappings struct {
 	Username PrefixedClaimOrExpression `json:"username"`
 	// groups represents an option for the groups attribute.
 	// The claim's value must be a string or string array claim.
-	// // If groups.claim is set, the prefix must be specified (and can be the empty string).
+	// If groups.claim is set, the prefix must be specified (and can be the empty string).
 	// +optional
 	Groups PrefixedClaimOrExpression `json:"groups,omitempty"`
+
+	// uid represents an option for the uid attribute.
+	// Claim must be a singular string claim.
+	// Expression must produce a string value.
+	// +optional
+	UID ClaimOrExpression `json:"uid,omitempty"`
+
+	// extra represents an option for the extra attribute.
+	// If multiple mappings have the same key, the result will be a concatenation of all values
+	// with the order preserved.
+	// If the value is empty, the extra mapping will not be present.
+	//
+	// hard-coded extra key/value
+	// - key: "foo"
+	//   valueExpression: "'bar'"
+	// This will result in an extra attribute - foo: ["bar"]
+	//
+	// hard-coded key, value copying claim value
+	// - key: "foo"
+	//   valueExpression: "claims.some_claim"
+	// This will result in an extra attribute - foo: [value of some_claim]
+	//
+	// hard-coded key, value derived from claim value
+	// - key: "admin"
+	//   valueExpression: '(has(claims.is_admin) && claims.is_admin) ? "true":""'
+	// This will result in:
+	//  - if is_admin claim is present and true, extra attribute - admin: ["true"]
+	//  - if is_admin claim is present and false or is_admin claim is not present, no extra attribute will be added
+	//
+	// +optional
+	Extra []ExtraMapping `json:"extra,omitempty"`
 }
 
 // PrefixedClaimOrExpression provides the configuration for a single prefixed claim or expression.
 type PrefixedClaimOrExpression struct {
 	// claim is the JWT claim to use.
+	// Mutually exclusive with expression.
 	// +optional
 	Claim string `json:"claim"`
 	// prefix is prepended to claim's value to prevent clashes with existing names.
-	// +required
+	// prefix needs to be set if claim is set and can be the empty string.
+	// Mutually exclusive with expression.
+	// +optional
 	Prefix *string `json:"prefix"`
+
+	// expression represents the expression which will be evaluated by CEL.
+	// Must produce a string.
+	//
+	// CEL expressions have access to the contents of the token claims, organized into CEL variable:
+	// - 'claims' is a map of claim names to claim values.
+	//   For example, a variable named 'sub' can be accessed as 'claims.sub'.
+	//   Nested claims can be accessed using dot notation, e.g. 'claims.email.verified'.
+	//
+	// Documentation on CEL: https://kubernetes.io/docs/reference/using-api/cel/
+	//
+	// Mutually exclusive with claim and prefix.
+	// +optional
+	Expression *string `json:"expression"`
+}
+
+// ClaimOrExpression provides the configuration for a single claim or expression.
+type ClaimOrExpression struct {
+	// claim is the JWT claim to use.
+	// Either claim or expression must be set.
+	// Mutually exclusive with expression.
+	// +optional
+	Claim string `json:"claim"`
+
+	// expression represents the expression which will be evaluated by CEL.
+	// Must produce a string.
+	//
+	// CEL expressions have access to the contents of the token claims, organized into CEL variable:
+	// - 'claims' is a map of claim names to claim values.
+	//   For example, a variable named 'sub' can be accessed as 'claims.sub'.
+	//   Nested claims can be accessed using dot notation, e.g. 'claims.email.verified'.
+	//
+	// Documentation on CEL: https://kubernetes.io/docs/reference/using-api/cel/
+	//
+	// Mutually exclusive with claim.
+	// +optional
+	Expression string `json:"expression"`
+}
+
+// ExtraMapping provides the configuration for a single extra mapping.
+type ExtraMapping struct {
+	// key is a string to use as the extra attribute key.
+	// +required
+	Key string `json:"key"`
+
+	// valueExpression is a CEL expression to extract extra attribute value.
+	// valueExpression must produce a string or string array value.
+	// "", [], and null values are treated as the extra mapping not being present.
+	// Empty string values contained within a string array are filtered out.
+	//
+	// CEL expressions have access to the contents of the token claims, organized into CEL variable:
+	// - 'claims' is a map of claim names to claim values.
+	//   For example, a variable named 'sub' can be accessed as 'claims.sub'.
+	//   Nested claims can be accessed using dot notation, e.g. 'claims.email.verified'.
+	//
+	// Documentation on CEL: https://kubernetes.io/docs/reference/using-api/cel/
+	//
+	// +required
+	ValueExpression string `json:"valueExpression"`
+}
+
+// UserValidationRule provides the configuration for a single user info validation rule.
+type UserValidationRule struct {
+	// rule represents the expression which will be evaluated by CEL.
+	// Must return true for the validation to pass.
+	//
+	// CEL expressions have access to the contents of UserInfo, organized into CEL variable:
+	// - 'user' - authentication.k8s.io/v1, Kind=UserInfo object.
+	//
+	// Documentation on CEL: https://kubernetes.io/docs/reference/using-api/cel/
+	//
+	// +required
+	Rule string `json:"rule"`
+
+	// message customizes the returned error message when rule returns false.
+	// message is a literal string.
+	// +optional
+	Message string `json:"message"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
