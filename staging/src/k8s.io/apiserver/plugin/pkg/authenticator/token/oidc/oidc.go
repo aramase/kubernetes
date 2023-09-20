@@ -41,13 +41,18 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc"
+	celgo "github.com/google/cel-go/cel"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiservervalidation "k8s.io/apiserver/pkg/apis/apiserver/validation"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 	"k8s.io/apiserver/pkg/authentication/user"
+	celenvironment "k8s.io/apiserver/pkg/cel/environment"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog/v2"
 )
@@ -165,6 +170,34 @@ type Authenticator struct {
 
 	// resolver is used to resolve distributed claims.
 	resolver *claimResolver
+
+	// usernameMapper contains the compiled CEL expression for mapping the username
+	// from the claims.
+	// The expression must return a string value.
+	usernameMapper *celMapper
+	// groupMapper contains the compiled CEL expression for mapping the groups
+	// from the claims.
+	// The expression must return a string or a list of strings.
+	groupMapper *celMapper
+	// uidMapper contains the compiled CEL expression for mapping the uid
+	// from the claims.
+	// The expression must return a string value.
+	uidMapper *celMapper
+
+	// claimValidationRulesMapper contains the compiled CEL expression for validating the claims.
+	// The expression must return a boolean value.
+	claimValidationRulesMapper *celMapper
+
+	// requiredClaims contains the list of claims that must be present in the token.
+	requiredClaims map[string]string
+
+	// userValidationRulesMapper contains the compiled CEL expression for validating the user info.
+	// The expression must return a boolean value.
+	userValidationRulesMapper *celMapper
+
+	// extraMapper contains the compiled CEL expression for extra claim mappings.
+	// The expression must return a string or a list of strings.
+	extraMapper *celMapper
 }
 
 func (a *Authenticator) setVerifier(v *oidc.IDTokenVerifier) {
@@ -285,6 +318,90 @@ func New(opts Options) (*Authenticator, error) {
 			authenticator.setVerifier(verifier)
 			return true, nil
 		}, ctx.Done())
+	}
+
+	compiler := authenticationcel.NewCompiler(celenvironment.MustBaseEnvSet(version.MajorMinor(1, 28)))
+	usernameExpression := opts.JWTAuthenticator.ClaimMappings.Username.Expression
+	if usernameExpression != nil && len(*usernameExpression) > 0 {
+		authenticator.usernameMapper = compile(
+			compiler,
+			[]authenticationcel.ExpressionAccessor{&authenticationcel.ClaimMappingCondition{Expression: *usernameExpression}},
+			celenvironment.StoredExpressions,
+		)
+	}
+	groupsExpression := opts.JWTAuthenticator.ClaimMappings.Groups.Expression
+	if groupsExpression != nil && len(*groupsExpression) > 0 {
+		authenticator.groupMapper = compile(
+			compiler,
+			[]authenticationcel.ExpressionAccessor{&authenticationcel.ClaimMappingCondition{Expression: *groupsExpression}},
+			celenvironment.StoredExpressions,
+		)
+	}
+	uidExpression := opts.JWTAuthenticator.ClaimMappings.UID.Expression
+	if len(uidExpression) > 0 {
+		authenticator.uidMapper = compile(
+			compiler,
+			[]authenticationcel.ExpressionAccessor{&authenticationcel.ClaimMappingCondition{Expression: uidExpression}},
+			celenvironment.StoredExpressions,
+		)
+	}
+
+	var claimValidationexpressionAccessors []authenticationcel.ExpressionAccessor
+	requiredClaims := make(map[string]string)
+	for _, claimValidationRule := range opts.JWTAuthenticator.ClaimValidationRules {
+		if len(claimValidationRule.Expression) > 0 {
+			claimValidationexpressionAccessors = append(claimValidationexpressionAccessors, &authenticationcel.ClaimValidationCondition{
+				Expression: claimValidationRule.Expression,
+				Message:    claimValidationRule.Message,
+			})
+		} else if len(claimValidationRule.Claim) > 0 {
+			requiredClaims[claimValidationRule.Claim] = claimValidationRule.RequiredValue
+		}
+	}
+
+	if len(claimValidationexpressionAccessors) > 0 {
+		authenticator.claimValidationRulesMapper = compile(
+			compiler,
+			claimValidationexpressionAccessors,
+			celenvironment.StoredExpressions,
+		)
+	}
+	authenticator.requiredClaims = requiredClaims
+
+	var extraExpressionAccessors []authenticationcel.ExpressionAccessor
+	for _, extraClaimMapping := range opts.JWTAuthenticator.ClaimMappings.Extra {
+		if len(extraClaimMapping.ValueExpression) > 0 {
+			extraExpressionAccessors = append(extraExpressionAccessors, &authenticationcel.ExtraMappingCondition{
+				Expression: extraClaimMapping.ValueExpression,
+				Key:        extraClaimMapping.Key,
+			})
+		}
+	}
+
+	if len(extraExpressionAccessors) > 0 {
+		authenticator.extraMapper = compile(
+			compiler,
+			extraExpressionAccessors,
+			celenvironment.StoredExpressions,
+		)
+	}
+
+	var userInfoExpressionAccessors []authenticationcel.ExpressionAccessor
+	for _, userInfoValidationRule := range opts.JWTAuthenticator.UserValidationRules {
+		if len(userInfoValidationRule.Rule) > 0 {
+			userInfoExpressionAccessors = append(userInfoExpressionAccessors, &authenticationcel.UserInfoValidationCondition{
+				Expression: userInfoValidationRule.Rule,
+				Message:    userInfoValidationRule.Message,
+			})
+		}
+	}
+
+	if len(userInfoExpressionAccessors) > 0 {
+		authenticator.userValidationRulesMapper = compile(
+			compiler,
+			userInfoExpressionAccessors,
+			celenvironment.StoredExpressions,
+		)
 	}
 
 	return authenticator, nil
@@ -522,48 +639,16 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*a
 	}
 
 	var username string
-	usernameClaim := a.jwtAuthenticator.ClaimMappings.Username.Claim
-	if err := c.unmarshalClaim(usernameClaim, &username); err != nil {
-		return nil, false, fmt.Errorf("oidc: parse username claims %q: %v", usernameClaim, err)
-	}
-
-	if usernameClaim == "email" {
-		// If the email_verified claim is present, ensure the email is valid.
-		// https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims
-		if hasEmailVerified := c.hasClaim("email_verified"); hasEmailVerified {
-			var emailVerified bool
-			if err := c.unmarshalClaim("email_verified", &emailVerified); err != nil {
-				return nil, false, fmt.Errorf("oidc: parse 'email_verified' claim: %v", err)
-			}
-
-			// If the email_verified claim is present we have to verify it is set to `true`.
-			if !emailVerified {
-				return nil, false, fmt.Errorf("oidc: email not verified")
-			}
-		}
-	}
-
-	userNamePrefix := a.jwtAuthenticator.ClaimMappings.Username.Prefix
-	if userNamePrefix != nil && *userNamePrefix != "" {
-		username = *userNamePrefix + username
+	if username, err = a.getUsername(ctx, c); err != nil {
+		return nil, false, err
 	}
 
 	info := &user.DefaultInfo{Name: username}
-	groupsClaim := a.jwtAuthenticator.ClaimMappings.Groups.Claim
-	if groupsClaim != "" {
-		if _, ok := c[groupsClaim]; ok {
-			// Some admins want to use string claims like "role" as the group value.
-			// Allow the group claim to be a single string instead of an array.
-			//
-			// See: https://github.com/kubernetes/kubernetes/issues/33290
-			var groups stringOrArray
-			if err := c.unmarshalClaim(groupsClaim, &groups); err != nil {
-				return nil, false, fmt.Errorf("oidc: parse groups claim %q: %v", groupsClaim, err)
-			}
-			info.Groups = []string(groups)
-		}
+	if info.Groups, err = a.getGroups(ctx, c); err != nil {
+		return nil, false, err
 	}
 
+	// TODO(aramase): handle prefix when it is a CEL expression
 	groupsPrefix := a.jwtAuthenticator.ClaimMappings.Groups.Prefix
 	if groupsPrefix != nil && *groupsPrefix != "" {
 		for i, group := range info.Groups {
@@ -571,11 +656,20 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*a
 		}
 	}
 
-	// check to ensure all required claims are present in the ID token and have matching values.
-	for _, claimValidationRule := range a.jwtAuthenticator.ClaimValidationRules {
-		claim := claimValidationRule.Claim
-		value := claimValidationRule.RequiredValue
+	if info.UID, err = a.getUID(ctx, c); err != nil {
+		return nil, false, err
+	}
 
+	extra, err := a.getExtra(ctx, c)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(extra) > 0 {
+		info.Extra = extra
+	}
+
+	// check to ensure all required claims are present in the ID token and have matching values.
+	for claim, value := range a.requiredClaims {
 		if !c.hasClaim(claim) {
 			return nil, false, fmt.Errorf("oidc: required claim %s not present in ID token", claim)
 		}
@@ -590,7 +684,226 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*a
 		}
 	}
 
+	if a.claimValidationRulesMapper != nil {
+		evalResult, err := a.claimValidationRulesMapper.eval(ctx, c, nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("oidc: error evaluating claim validation expression: %v", err)
+		}
+		// TODO(aramase): should we return aggregate errors?
+		for _, result := range evalResult {
+			if result.Error != nil {
+				return nil, false, fmt.Errorf("oidc: error evaluating claim validation expression: %v", result.Error)
+			}
+			if !result.EvalResult.Value().(bool) {
+				claimValidationCondition := result.ExpressionAccessor.(*authenticationcel.ClaimValidationCondition)
+				return nil, false, fmt.Errorf("oidc: claim validation expression failed: %v", claimValidationCondition.Message)
+			}
+		}
+	}
+
+	if a.userValidationRulesMapper != nil {
+		userInfo := &authenticationv1.UserInfo{
+			Extra:    make(map[string]authenticationv1.ExtraValue),
+			Groups:   info.GetGroups(),
+			UID:      info.GetUID(),
+			Username: info.GetName(),
+		}
+		// Convert the extra information in the user object
+		for key, val := range info.GetExtra() {
+			userInfo.Extra[key] = authenticationv1.ExtraValue(val)
+		}
+
+		evalResult, err := a.userValidationRulesMapper.eval(ctx, nil, userInfo)
+		if err != nil {
+			return nil, false, fmt.Errorf("oidc: error evaluating user info validation rule: %v", err)
+		}
+
+		for _, result := range evalResult {
+			if result.Error != nil {
+				return nil, false, fmt.Errorf("oidc: error evaluating user info validation rule: %v", result.Error)
+			}
+			if !result.EvalResult.Value().(bool) {
+				userInfoValidationCondition := result.ExpressionAccessor.(*authenticationcel.UserInfoValidationCondition)
+				return nil, false, fmt.Errorf("oidc: user info validation rule failed: %v", userInfoValidationCondition.Message)
+			}
+		}
+	}
+
 	return &authenticator.Response{User: info}, true, nil
+}
+
+func (a *Authenticator) getUsername(ctx context.Context, c claims) (string, error) {
+	if a.usernameMapper != nil {
+		evalResults, err := a.usernameMapper.eval(ctx, c, nil)
+		if err != nil {
+			return "", fmt.Errorf("oidc: error evaluating username claim expression: %w", err)
+		}
+		evalResult := evalResults[0]
+		if evalResult.Error != nil {
+			return "", fmt.Errorf("oidc: error evaluating username claim expression: %w", evalResult.Error)
+		}
+
+		if evalResult.EvalResult.Type() != celgo.StringType {
+			return "", fmt.Errorf("oidc: error evaluating username claim expression: %w", fmt.Errorf("username claim expression must return a string"))
+		}
+
+		return evalResult.EvalResult.Value().(string), nil
+	}
+
+	var username string
+	usernameClaim := a.jwtAuthenticator.ClaimMappings.Username.Claim
+	if err := c.unmarshalClaim(usernameClaim, &username); err != nil {
+		return "", fmt.Errorf("oidc: parse username claims %q: %v", usernameClaim, err)
+	}
+
+	if usernameClaim == "email" {
+		// If the email_verified claim is present, ensure the email is valid.
+		// https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims
+		if hasEmailVerified := c.hasClaim("email_verified"); hasEmailVerified {
+			var emailVerified bool
+			if err := c.unmarshalClaim("email_verified", &emailVerified); err != nil {
+				return "", fmt.Errorf("oidc: parse 'email_verified' claim: %v", err)
+			}
+
+			// If the email_verified claim is present we have to verify it is set to `true`.
+			if !emailVerified {
+				return "", fmt.Errorf("oidc: email not verified")
+			}
+		}
+	}
+
+	userNamePrefix := a.jwtAuthenticator.ClaimMappings.Username.Prefix
+	if userNamePrefix != nil && *userNamePrefix != "" {
+		return *userNamePrefix + username, nil
+	}
+	return username, nil
+}
+
+func (a *Authenticator) getGroups(ctx context.Context, c claims) ([]string, error) {
+	groupsClaim := a.jwtAuthenticator.ClaimMappings.Groups.Claim
+	if len(groupsClaim) > 0 {
+		if _, ok := c[groupsClaim]; ok {
+			// Some admins want to use string claims like "role" as the group value.
+			// Allow the group claim to be a single string instead of an array.
+			//
+			// See: https://github.com/kubernetes/kubernetes/issues/33290
+			var groups stringOrArray
+			if err := c.unmarshalClaim(groupsClaim, &groups); err != nil {
+				return nil, fmt.Errorf("oidc: parse groups claim %q: %w", groupsClaim, err)
+			}
+			return []string(groups), nil
+		}
+	}
+
+	if a.groupMapper == nil {
+		return nil, nil
+	}
+
+	evalResults, err := a.groupMapper.eval(ctx, c, nil)
+	if err != nil {
+		return nil, fmt.Errorf("oidc: error evaluating group claim expression: %v", err)
+	}
+
+	evalResult := evalResults[0]
+	if evalResult.Error != nil {
+		return nil, fmt.Errorf("oidc: error evaluating group claim expression: %v", evalResult.Error)
+	}
+
+	switch evalResult.EvalResult.Type().TypeName() {
+	case celgo.StringType.TypeName():
+		return []string{evalResult.EvalResult.Value().(string)}, nil
+	case celgo.ListType(nil).TypeName():
+		out := evalResult.EvalResult.Value().([]interface{})
+		groups := make([]string, len(out))
+		for i, v := range out {
+			groups[i] = v.(string)
+		}
+		return groups, nil
+	case celgo.NullType.TypeName():
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("oidc: error evaluating group claim expression: %v", fmt.Errorf("group claim expression must return a string or a list of strings"))
+	}
+}
+
+func (a *Authenticator) getUID(ctx context.Context, c claims) (string, error) {
+	uidClaim := a.jwtAuthenticator.ClaimMappings.UID.Claim
+	if len(uidClaim) > 0 {
+		var uid string
+		if err := c.unmarshalClaim(uidClaim, &uid); err != nil {
+			return "", fmt.Errorf("oidc: parse uid claim %q: %w", uidClaim, err)
+		}
+		return uid, nil
+	}
+
+	if a.uidMapper == nil {
+		return "", nil
+	}
+
+	evalResults, err := a.uidMapper.eval(ctx, c, nil)
+	if err != nil {
+		return "", fmt.Errorf("oidc: error evaluating uid claim expression: %w", err)
+	}
+	evalResult := evalResults[0]
+	if evalResult.Error != nil {
+		return "", fmt.Errorf("oidc: error evaluating uid claim expression: %w", evalResult.Error)
+	}
+	if evalResult.EvalResult.Type() != celgo.StringType {
+		return "", fmt.Errorf("oidc: error evaluating uid claim expression: %w", fmt.Errorf("uid claim expression must return a string"))
+	}
+
+	return evalResult.EvalResult.Value().(string), nil
+}
+
+func (a *Authenticator) getExtra(ctx context.Context, c claims) (map[string][]string, error) {
+	if a.extraMapper == nil {
+		return nil, nil
+	}
+
+	extra := make(map[string][]string, len(a.extraMapper.compilationResults))
+
+	evalResult, err := a.extraMapper.eval(ctx, c, nil)
+	if err != nil {
+		return nil, fmt.Errorf("oidc: error evaluating extra claim expression: %w", err)
+	}
+
+	for _, result := range evalResult {
+		if result.Error != nil {
+			return nil, fmt.Errorf("oidc: error evaluating extra claim expression: %w", result.Error)
+		}
+		extraMapping := result.ExpressionAccessor.(*authenticationcel.ExtraMappingCondition)
+
+		var resultValue []string
+		switch result.EvalResult.Type().TypeName() {
+		case celgo.StringType.TypeName():
+			out := result.EvalResult.Value().(string)
+			if len(out) > 0 {
+				resultValue = []string{result.EvalResult.Value().(string)}
+			}
+		case celgo.ListType(nil).TypeName():
+			out := result.EvalResult.Value().([]interface{})
+			resultValue = make([]string, len(out))
+			for i, v := range out {
+				resultValue[i] = v.(string)
+			}
+		case celgo.NullType.TypeName():
+			continue
+		default:
+			return nil, fmt.Errorf("oidc: error evaluating extra claim expression: %w", fmt.Errorf("extra claim expression must return a string or a list of strings"))
+		}
+
+		if len(resultValue) == 0 {
+			continue
+		}
+		// if the key already exists, append the new values to the existing values
+		if _, ok := extra[extraMapping.Key]; ok {
+			extra[extraMapping.Key] = append(extra[extraMapping.Key], []string(resultValue)...)
+			continue
+		}
+		extra[extraMapping.Key] = []string(resultValue)
+	}
+
+	return extra, nil
 }
 
 // getClaimJWT gets a distributed claim JWT from url, using the supplied access

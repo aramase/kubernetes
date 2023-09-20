@@ -1801,7 +1801,7 @@ func TestToken(t *testing.T) {
 			pubKeys: []*jose.JSONWebKey{
 				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
 			},
-			wantInitErr: `claimMappings.username.claim: Required value: claim name is required`,
+			wantInitErr: `claimMappings.username: Required value: claim or expression is required`,
 		},
 		{
 			name: "invalid-sig-alg",
@@ -1909,6 +1909,679 @@ func TestToken(t *testing.T) {
 				"exp": %d
 			}`, valid.Unix()),
 			wantErr: `oidc: verify token: oidc: expected audience "my-client" got ["my-wrong-client"]`,
+		},
+		{
+			name: "user validation rule fails for user.username",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Claim:  "username",
+							Prefix: pointer.String("system:"),
+						},
+					},
+					UserValidationRules: []apiserver.UserValidationRule{
+						{
+							Rule:    "!user.username.startsWith('system:')",
+							Message: "username cannot used reserved system: prefix",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d
+			}`, valid.Unix()),
+			wantErr: `oidc: user info validation rule failed: username cannot used reserved system: prefix`,
+		},
+		{
+			name: "user validation rule fails for user.groups",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Claim:  "groups",
+							Prefix: pointer.String("system:"),
+						},
+					},
+					UserValidationRules: []apiserver.UserValidationRule{
+						{
+							Rule:    "user.groups.all(group, !group.startsWith('system:'))",
+							Message: "groups cannot used reserved system: prefix",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"groups": ["team1", "team2"]
+			}`, valid.Unix()),
+			wantErr: `oidc: user info validation rule failed: groups cannot used reserved system: prefix`,
+		},
+		{
+			name: "claim validation rule with expression fails",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Claim:  "username",
+							Prefix: pointer.String(""),
+						},
+					},
+					ClaimValidationRules: []apiserver.ClaimValidationRule{
+						{
+							Expression: `claims.hd == "example.com"`,
+							Message:    "hd claim must be example.com",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d
+			}`, valid.Unix()),
+			wantErr: `oidc: error evaluating claim validation expression: expression 'claims.hd == "example.com"' resulted in error: no such key: hd`,
+		},
+		{
+			name: "claim validation rule with expression",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Claim:  "username",
+							Prefix: pointer.String(""),
+						},
+					},
+					ClaimValidationRules: []apiserver.ClaimValidationRule{
+						{
+							Expression: `claims.hd == "example.com"`,
+							Message:    "hd claim must be example.com",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"hd": "example.com"
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
+		{
+			name: "claim validation rule with expression and nested claims",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Claim:  "username",
+							Prefix: pointer.String(""),
+						},
+					},
+					ClaimValidationRules: []apiserver.ClaimValidationRule{
+						{
+							Expression: `claims.foo.bar == "baz"`,
+							Message:    "foo.bar claim must be baz",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"hd": "example.com",
+				"foo": {
+					"bar": "baz"
+				}
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
+		{
+			name: "claim validation rule with mix of expression and claim",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Claim:  "username",
+							Prefix: pointer.String(""),
+						},
+					},
+					ClaimValidationRules: []apiserver.ClaimValidationRule{
+						{
+							Expression: `claims.foo.bar == "baz"`,
+							Message:    "foo.bar claim must be baz",
+						},
+						{
+							Claim:         "hd",
+							RequiredValue: "example.com",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"hd": "example.com",
+				"foo": {
+					"bar": "baz"
+				}
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
+		{
+			name: "username claim mapping with expression",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
+		{
+			name: "username claim mapping with expression and nested claim",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.foo.username"),
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"foo": {
+					"username": "jane"
+				}
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+			},
+		},
+		{
+			name: "groups claim mapping with expression",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+			},
+		},
+		{
+			name: "uid claim mapping with expression",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+						UID: apiserver.ClaimOrExpression{
+							Expression: "claims.uid",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d,
+				"uid": "1234"
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+				UID:    "1234",
+			},
+		},
+		{
+			name: "uid claim mapping with claim",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+						UID: apiserver.ClaimOrExpression{
+							Claim: "uid",
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d,
+				"uid": "1234"
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+				UID:    "1234",
+			},
+		},
+		{
+			name: "extra claim mapping with expression",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+						UID: apiserver.ClaimOrExpression{
+							Expression: "claims.uid",
+						},
+						Extra: []apiserver.ExtraMapping{
+							{
+								Key:             "foo",
+								ValueExpression: "claims.foo",
+							},
+							{
+								Key:             "bar",
+								ValueExpression: "claims.bar",
+							},
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d,
+				"uid": "1234",
+				"foo": "bar",
+				"bar": [
+					"baz",
+					"qux"
+				]
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+				UID:    "1234",
+				Extra: map[string][]string{
+					"foo": {"bar"},
+					"bar": {"baz", "qux"},
+				},
+			},
+		},
+		{
+			name: "extra claim mapping, value derived from claim value",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Extra: []apiserver.ExtraMapping{
+							{
+								Key: "admin",
+								// ValueExpression: `(has(claims.is_admin) && claims.is_admin) ? "true":""`,
+								ValueExpression: `(has(claims.is_admin) && claims.is_admin) ? "true":""`,
+							},
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"is_admin": true
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+				Extra: map[string][]string{
+					"admin": {"true"},
+				},
+			},
+		},
+		{
+			name: "hardcoded extra claim mapping",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Extra: []apiserver.ExtraMapping{
+							{
+								Key:             "admin",
+								ValueExpression: `"true"`,
+							},
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"exp": %d,
+				"is_admin": true
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name: "jane",
+				Extra: map[string][]string{
+					"admin": {"true"},
+				},
+			},
+		},
+		{
+			name: "extra claim mapping, multiple expressions for same key",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+						UID: apiserver.ClaimOrExpression{
+							Expression: "claims.uid",
+						},
+						Extra: []apiserver.ExtraMapping{
+							{
+								Key:             "foo",
+								ValueExpression: "claims.foo",
+							},
+							{
+								Key:             "bar",
+								ValueExpression: "claims.bar",
+							},
+							{
+								Key:             "foo",
+								ValueExpression: "claims.bar",
+							},
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d,
+				"uid": "1234",
+				"foo": "bar",
+				"bar": [
+					"baz",
+					"qux"
+				]
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+				UID:    "1234",
+				Extra: map[string][]string{
+					// order of values should be preserved
+					"foo": {"bar", "baz", "qux"},
+					"bar": {"baz", "qux"},
+				},
+			},
+		},
+		{
+			name: "extra claim mapping, empty string value for key",
+			options: Options{
+				JWTAuthenticator: apiserver.JWTAuthenticator{
+					Issuer: apiserver.Issuer{
+						URL:       "https://auth.example.com",
+						Audiences: []string{"my-client"},
+					},
+					ClaimMappings: apiserver.ClaimMappings{
+						Username: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.username"),
+						},
+						Groups: apiserver.PrefixedClaimOrExpression{
+							Expression: pointer.String("claims.groups"),
+						},
+						UID: apiserver.ClaimOrExpression{
+							Expression: "claims.uid",
+						},
+						Extra: []apiserver.ExtraMapping{
+							{
+								Key:             "foo",
+								ValueExpression: "claims.foo",
+							},
+							{
+								Key:             "bar",
+								ValueExpression: "claims.bar",
+							},
+						},
+					},
+				},
+				now: func() time.Time { return now },
+			},
+			signingKey: loadRSAPrivKey(t, "testdata/rsa_1.pem", jose.RS256),
+			pubKeys: []*jose.JSONWebKey{
+				loadRSAKey(t, "testdata/rsa_1.pem", jose.RS256),
+			},
+			claims: fmt.Sprintf(`{
+				"iss": "https://auth.example.com",
+				"aud": "my-client",
+				"username": "jane",
+				"groups": ["team1", "team2"],
+				"exp": %d,
+				"uid": "1234",
+				"foo": "",
+				"bar": [
+					"baz",
+					"qux"
+				]
+			}`, valid.Unix()),
+			want: &user.DefaultInfo{
+				Name:   "jane",
+				Groups: []string{"team1", "team2"},
+				UID:    "1234",
+				Extra: map[string][]string{
+					"bar": {"baz", "qux"},
+				},
+			},
 		},
 	}
 	for _, test := range tests {

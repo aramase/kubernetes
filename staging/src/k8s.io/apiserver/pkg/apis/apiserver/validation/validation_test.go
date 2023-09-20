@@ -32,8 +32,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	api "k8s.io/apiserver/pkg/apis/apiserver"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/utils/pointer"
+)
+
+var (
+	compiler = authenticationcel.NewCompiler(environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()))
 )
 
 func TestValidateAuthenticationConfiguration(t *testing.T) {
@@ -130,7 +136,37 @@ func TestValidateAuthenticationConfiguration(t *testing.T) {
 					},
 				},
 			},
-			want: "jwt[0].claimMappings.username.claim: Required value: claim name is required",
+			want: "jwt[0].claimMappings.username: Required value: claim or expression is required",
+		},
+		{
+			name: "failed userValidationRule validation",
+			in: &api.AuthenticationConfiguration{
+				JWT: []api.JWTAuthenticator{
+					{
+						Issuer: api.Issuer{
+							URL:       "https://issuer-url",
+							Audiences: []string{"audience"},
+						},
+						ClaimValidationRules: []api.ClaimValidationRule{
+							{
+								Claim:         "foo",
+								RequiredValue: "bar",
+							},
+						},
+						ClaimMappings: api.ClaimMappings{
+							Username: api.PrefixedClaimOrExpression{
+								Claim:  "sub",
+								Prefix: pointer.String("prefix"),
+							},
+						},
+						UserValidationRules: []api.UserValidationRule{
+							{Rule: "user.username == 'foo'"},
+							{Rule: "user.username == 'foo'"},
+						},
+					},
+				},
+			},
+			want: `jwt[0].userValidationRules[1].rule: Duplicate value: "user.username == 'foo'"`,
 		},
 		{
 			name: "valid authentication configuration",
@@ -310,7 +346,7 @@ func TestValidateCertificateAuthority(t *testing.T) {
 	}
 }
 
-func TestClaimValidationRules(t *testing.T) {
+func TestValidateClaimValidationRules(t *testing.T) {
 	fldPath := field.NewPath("issuer", "claimValidationRules")
 
 	testCases := []struct {
@@ -319,21 +355,52 @@ func TestClaimValidationRules(t *testing.T) {
 		want string
 	}{
 		{
-			name: "claim validation rule claim is empty",
-			in:   []api.ClaimValidationRule{{Claim: ""}},
-			want: "issuer.claimValidationRules[0].claim: Required value: claim name is required",
+			name: "claim and expression are empty",
+			in:   []api.ClaimValidationRule{{}},
+			want: "issuer.claimValidationRules[0].claim: Required value: claim or expression is required",
+		},
+		{
+			name: "claim and expression are set",
+			in: []api.ClaimValidationRule{
+				{Claim: "claim", Expression: "expression"},
+			},
+			want: `issuer.claimValidationRules[0].claim: Invalid value: "claim": claim and expression can't both be set`,
+		},
+		{
+			name: "message set when claim is set",
+			in: []api.ClaimValidationRule{
+				{Claim: "claim", Message: "message"},
+			},
+			want: `issuer.claimValidationRules[0].message: Invalid value: "message": message can't be set when claim is set`,
+		},
+		{
+			name: "requiredValue set when expression is set",
+			in: []api.ClaimValidationRule{
+				{Expression: "claims.foo == 'bar'", RequiredValue: "value"},
+			},
+			want: `issuer.claimValidationRules[0].requiredValue: Invalid value: "value": requiredValue can't be set when expression is set`,
 		},
 		{
 			name: "duplicate claim",
-			in: []api.ClaimValidationRule{{
-				Claim: "claim", RequiredValue: "value1"},
-				{Claim: "claim", RequiredValue: "value2"},
+			in: []api.ClaimValidationRule{
+				{Claim: "claim"},
+				{Claim: "claim"},
 			},
 			want: `issuer.claimValidationRules[1].claim: Duplicate value: "claim"`,
 		},
 		{
-			name: "valid claim validation rule",
-			in:   []api.ClaimValidationRule{{Claim: "claim", RequiredValue: "value"}},
+			name: "duplicate expression",
+			in: []api.ClaimValidationRule{
+				{Expression: "claims.foo == 'bar'"},
+				{Expression: "claims.foo == 'bar'"},
+			},
+			want: `issuer.claimValidationRules[1].expression: Duplicate value: "claims.foo == 'bar'"`,
+		},
+		{
+			name: "valid claim validation rule with expression",
+			in: []api.ClaimValidationRule{
+				{Expression: "claims.foo == 'bar'"},
+			},
 			want: "",
 		},
 		{
@@ -348,7 +415,7 @@ func TestClaimValidationRules(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validateClaimValidationRules(tt.in, fldPath).ToAggregate()
+			got := validateClaimValidationRules(compiler, tt.in, fldPath).ToAggregate()
 			if d := cmp.Diff(tt.want, errString(got)); d != "" {
 				t.Fatalf("ClaimValidationRules validation mismatch (-want +got):\n%s", d)
 			}
@@ -365,30 +432,188 @@ func TestValidateClaimMappings(t *testing.T) {
 		want string
 	}{
 		{
-			name: "username claim is empty",
-			in:   api.ClaimMappings{Username: api.PrefixedClaimOrExpression{Claim: "", Prefix: pointer.String("prefix")}},
-			want: "issuer.claimMappings.username.claim: Required value: claim name is required",
-		},
-		{
-			name: "username prefix is empty",
-			in:   api.ClaimMappings{Username: api.PrefixedClaimOrExpression{Claim: "claim"}},
-			want: "issuer.claimMappings.username.prefix: Required value: prefix is required",
-		},
-		{
-			name: "groups prefix is empty",
+			name: "username expression and claim are set",
 			in: api.ClaimMappings{
-				Username: api.PrefixedClaimOrExpression{Claim: "claim", Prefix: pointer.String("prefix")},
-				Groups:   api.PrefixedClaimOrExpression{Claim: "claim"},
+				Username: api.PrefixedClaimOrExpression{
+					Claim:      "claim",
+					Expression: pointer.String("claims.username"),
+				},
 			},
-			want: "issuer.claimMappings.groups.prefix: Required value: prefix is required when claim is set",
+			want: `issuer.claimMappings.username: Invalid value: "": claim and expression can't both be set`,
 		},
 		{
-			name: "groups prefix set but claim is empty",
+			name: "username expression and claim are empty",
+			in:   api.ClaimMappings{Username: api.PrefixedClaimOrExpression{}},
+			want: "issuer.claimMappings.username: Required value: claim or expression is required",
+		},
+		{
+			name: "username prefix set when expression is set",
 			in: api.ClaimMappings{
-				Username: api.PrefixedClaimOrExpression{Claim: "claim", Prefix: pointer.String("prefix")},
-				Groups:   api.PrefixedClaimOrExpression{Prefix: pointer.String("prefix")},
+				Username: api.PrefixedClaimOrExpression{
+					Expression: pointer.String("claims.username"),
+					Prefix:     pointer.String("prefix"),
+				},
 			},
-			want: "issuer.claimMappings.groups.claim: Required value: non-empty claim name is required when prefix is set",
+			want: `issuer.claimMappings.username.prefix: Invalid value: "prefix": prefix can't be set when expression is set`,
+		},
+		{
+			name: "username prefix is nil when claim is set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim: "claim",
+				},
+			},
+			want: `issuer.claimMappings.username.prefix: Required value: prefix is required when claim is set`,
+		},
+		{
+			name: "username expression is invalid",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Expression: pointer.String("foo.bar"),
+				},
+			},
+			want: `issuer.claimMappings.username.expression: Invalid value: "foo.bar": compilation failed: ERROR: <input>:1:1: undeclared reference to 'foo' (in container '')
+ | foo.bar
+ | ^`,
+		},
+		{
+			name: "groups expression and claim are set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Groups: api.PrefixedClaimOrExpression{
+					Claim:      "claim",
+					Expression: pointer.String("claims.groups"),
+				},
+			},
+			want: `issuer.claimMappings.groups: Invalid value: "": claim and expression can't both be set`,
+		},
+		{
+			name: "groups expression and claim are empty, but prefix is set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Groups: api.PrefixedClaimOrExpression{
+					Prefix: pointer.String("prefix"),
+				},
+			},
+			want: `issuer.claimMappings.groups.prefix: Invalid value: "prefix": prefix can't be set when claim is not set`,
+		},
+		{
+			name: "groups prefix set when expression is set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Groups: api.PrefixedClaimOrExpression{
+					Expression: pointer.String("claims.groups"),
+					Prefix:     pointer.String("prefix"),
+				},
+			},
+			want: `issuer.claimMappings.groups.prefix: Invalid value: "prefix": prefix can't be set when expression is set`,
+		},
+		{
+			name: "groups prefix is nil when claim is set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Groups: api.PrefixedClaimOrExpression{
+					Claim: "claim",
+				},
+			},
+			want: `issuer.claimMappings.groups.prefix: Required value: prefix is required when claim is set`,
+		},
+		{
+			name: "groups expression is invalid",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Groups: api.PrefixedClaimOrExpression{
+					Expression: pointer.String("foo.bar"),
+				},
+			},
+			want: `issuer.claimMappings.groups.expression: Invalid value: "foo.bar": compilation failed: ERROR: <input>:1:1: undeclared reference to 'foo' (in container '')
+ | foo.bar
+ | ^`,
+		},
+		{
+			name: "uid claim and expression are set",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				UID: api.ClaimOrExpression{
+					Claim:      "claim",
+					Expression: "claims.uid",
+				},
+			},
+			want: `issuer.claimMappings.uid: Invalid value: "": claim and expression can't both be set`,
+		},
+		{
+			name: "uid expression is invalid",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				UID: api.ClaimOrExpression{
+					Expression: "foo.bar",
+				},
+			},
+			want: `issuer.claimMappings.uid.expression: Invalid value: "foo.bar": compilation failed: ERROR: <input>:1:1: undeclared reference to 'foo' (in container '')
+ | foo.bar
+ | ^`,
+		},
+		{
+			name: "extra mapping key is empty",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Extra: []api.ExtraMapping{
+					{Key: "", ValueExpression: "claims.extra"},
+				},
+			},
+			want: `issuer.claimMappings.extra[0].key: Required value: key is required`,
+		},
+		{
+			name: "extra mapping value expression is empty",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Extra: []api.ExtraMapping{
+					{Key: "key", ValueExpression: ""},
+				},
+			},
+			want: `issuer.claimMappings.extra[0].valueExpression: Required value: valueExpression is required`,
+		},
+		{
+			name: "extra mapping value expression is invalid",
+			in: api.ClaimMappings{
+				Username: api.PrefixedClaimOrExpression{
+					Claim:  "claim",
+					Prefix: pointer.String("prefix"),
+				},
+				Extra: []api.ExtraMapping{
+					{Key: "key", ValueExpression: "foo.bar"},
+				},
+			},
+			want: `issuer.claimMappings.extra[0].valueExpression: Invalid value: "foo.bar": compilation failed: ERROR: <input>:1:1: undeclared reference to 'foo' (in container '')
+ | foo.bar
+ | ^`,
 		},
 		{
 			name: "valid claim mappings",
@@ -402,9 +627,50 @@ func TestValidateClaimMappings(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validateClaimMappings(tt.in, fldPath).ToAggregate()
+			got := validateClaimMappings(compiler, tt.in, fldPath).ToAggregate()
 			if d := cmp.Diff(tt.want, errString(got)); d != "" {
 				t.Fatalf("ClaimMappings validation mismatch (-want +got):\n%s", d)
+			}
+		})
+	}
+}
+
+func TestValidateUserInfoValidationRules(t *testing.T) {
+	fldPath := field.NewPath("issuer", "userValidationRules")
+
+	testCases := []struct {
+		name string
+		in   []api.UserValidationRule
+		want string
+	}{
+		{
+			name: "user info validation rule, rule is empty",
+			in:   []api.UserValidationRule{{}},
+			want: "issuer.userValidationRules[0].rule: Required value: rule is required",
+		},
+		{
+			name: "duplicate rule",
+			in: []api.UserValidationRule{
+				{Rule: "user.username == 'foo'"},
+				{Rule: "user.username == 'foo'"},
+			},
+			want: `issuer.userValidationRules[1].rule: Duplicate value: "user.username == 'foo'"`,
+		},
+		{
+			name: "valid user info validation rule",
+			in: []api.UserValidationRule{
+				{Rule: "user.username == 'foo'"},
+				{Rule: "!user.username.startsWith('system:')", Message: "username cannot used reserved system: prefix"},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := validateUserValidationRules(compiler, tt.in, fldPath).ToAggregate()
+			if d := cmp.Diff(tt.want, errString(got)); d != "" {
+				t.Fatalf("UserValidationRules validation mismatch (-want +got):\n%s", d)
 			}
 		})
 	}

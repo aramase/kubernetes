@@ -17,8 +17,8 @@ limitations under the License.
 package validation
 
 import (
+	"errors"
 	"fmt"
-	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,8 +29,12 @@ import (
 	"k8s.io/api/authorization/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	api "k8s.io/apiserver/pkg/apis/apiserver"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	"k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
 	"k8s.io/client-go/util/cert"
 )
 
@@ -85,9 +89,12 @@ func ValidateJWTAuthenticator(authenticator api.JWTAuthenticator) field.ErrorLis
 func validateJWTAuthenticator(authenticator api.JWTAuthenticator, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
+	compiler := authenticationcel.NewCompiler(environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion()))
+
 	allErrs = append(allErrs, validateIssuer(authenticator.Issuer, fldPath.Child("issuer"))...)
-	allErrs = append(allErrs, validateClaimValidationRules(authenticator.ClaimValidationRules, fldPath.Child("claimValidationRules"))...)
-	allErrs = append(allErrs, validateClaimMappings(authenticator.ClaimMappings, fldPath.Child("claimMappings"))...)
+	allErrs = append(allErrs, validateClaimValidationRules(compiler, authenticator.ClaimValidationRules, fldPath.Child("claimValidationRules"))...)
+	allErrs = append(allErrs, validateClaimMappings(compiler, authenticator.ClaimMappings, fldPath.Child("claimMappings"))...)
+	allErrs = append(allErrs, validateUserValidationRules(compiler, authenticator.UserValidationRules, fldPath.Child("userValidationRules"))...)
 
 	return allErrs
 }
@@ -169,46 +176,164 @@ func validateCertificateAuthority(certificateAuthority string, fldPath *field.Pa
 	return allErrs
 }
 
-func validateClaimValidationRules(rules []api.ClaimValidationRule, fldPath *field.Path) field.ErrorList {
+func validateClaimValidationRules(compiler authenticationcel.Compiler, rules []api.ClaimValidationRule, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
 	seenClaims := sets.NewString()
+	seenExpressions := sets.NewString()
 	for i, rule := range rules {
 		fldPath := fldPath.Index(i)
 
-		if len(rule.Claim) == 0 {
-			allErrs = append(allErrs, field.Required(fldPath.Child("claim"), "claim name is required"))
-			continue
-		}
+		switch {
+		case len(rule.Claim) > 0 && len(rule.Expression) > 0:
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("claim"), rule.Claim, "claim and expression can't both be set"))
+		case len(rule.Claim) == 0 && len(rule.Expression) == 0:
+			allErrs = append(allErrs, field.Required(fldPath.Child("claim"), "claim or expression is required"))
+		case len(rule.Claim) > 0:
+			if len(rule.Message) > 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Child("message"), rule.Message, "message can't be set when claim is set"))
+			}
+			if seenClaims.Has(rule.Claim) {
+				allErrs = append(allErrs, field.Duplicate(fldPath.Child("claim"), rule.Claim))
+			}
+			seenClaims.Insert(rule.Claim)
+		case len(rule.Expression) > 0:
+			if len(rule.RequiredValue) > 0 {
+				allErrs = append(allErrs, field.Invalid(fldPath.Child("requiredValue"), rule.RequiredValue, "requiredValue can't be set when expression is set"))
+			}
+			if seenExpressions.Has(rule.Expression) {
+				allErrs = append(allErrs, field.Duplicate(fldPath.Child("expression"), rule.Expression))
+				continue
+			}
+			seenExpressions.Insert(rule.Expression)
 
-		if seenClaims.Has(rule.Claim) {
-			allErrs = append(allErrs, field.Duplicate(fldPath.Child("claim"), rule.Claim))
-			continue
+			allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.ClaimValidationCondition{
+				Expression: rule.Expression,
+			}, environment.StoredExpressions, fldPath.Child("expression"))...)
 		}
-		seenClaims.Insert(rule.Claim)
 	}
 
 	return allErrs
 }
 
-func validateClaimMappings(m api.ClaimMappings, fldPath *field.Path) field.ErrorList {
+func validateClaimMappings(compiler authenticationcel.Compiler, m api.ClaimMappings, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
-	if len(m.Username.Claim) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("username", "claim"), "claim name is required"))
+	switch {
+	case m.Username.Expression != nil && len(m.Username.Claim) > 0:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("username"), "", "claim and expression can't both be set"))
+	case m.Username.Expression == nil && len(m.Username.Claim) == 0:
+		allErrs = append(allErrs, field.Required(fldPath.Child("username"), "claim or expression is required"))
+	case m.Username.Expression != nil:
+		allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.ClaimMappingCondition{
+			Expression: *m.Username.Expression,
+		}, environment.StoredExpressions, fldPath.Child("username").Child("expression"))...)
+		if m.Username.Prefix != nil {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("username", "prefix"), *m.Username.Prefix, "prefix can't be set when expression is set"))
+		}
+	case len(m.Username.Claim) > 0:
+		if m.Username.Prefix == nil {
+			allErrs = append(allErrs, field.Required(fldPath.Child("username", "prefix"), "prefix is required when claim is set"))
+		}
 	}
-	// TODO(aramase): when Expression is added to PrefixedClaimOrExpression, check prefix and expression are not both set.
-	if m.Username.Prefix == nil {
-		allErrs = append(allErrs, field.Required(fldPath.Child("username", "prefix"), "prefix is required"))
-	}
-	if len(m.Groups.Claim) > 0 && m.Groups.Prefix == nil {
+
+	switch {
+	case m.Groups.Expression != nil && len(m.Groups.Claim) > 0:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("groups"), "", "claim and expression can't both be set"))
+	case m.Groups.Expression == nil && len(m.Groups.Claim) == 0:
+		if m.Groups.Prefix != nil {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("groups", "prefix"), *m.Groups.Prefix, "prefix can't be set when claim is not set"))
+		}
+	case m.Groups.Expression != nil:
+		allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.ClaimMappingCondition{
+			Expression: *m.Groups.Expression,
+		}, environment.StoredExpressions, fldPath.Child("groups").Child("expression"))...)
+		if m.Groups.Prefix != nil {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("groups", "prefix"), *m.Groups.Prefix, "prefix can't be set when expression is set"))
+		}
+	case len(m.Groups.Claim) > 0 && m.Groups.Prefix == nil:
 		allErrs = append(allErrs, field.Required(fldPath.Child("groups", "prefix"), "prefix is required when claim is set"))
 	}
-	if m.Groups.Prefix != nil && len(m.Groups.Claim) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("groups", "claim"), "non-empty claim name is required when prefix is set"))
+
+	switch {
+	case len(m.UID.Claim) > 0 && len(m.UID.Expression) > 0:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("uid"), "", "claim and expression can't both be set"))
+	case len(m.UID.Expression) > 0:
+		allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.ClaimMappingCondition{
+			Expression: m.UID.Expression,
+		}, environment.StoredExpressions, fldPath.Child("uid").Child("expression"))...)
+	}
+
+	// There is no check for duplicate extra mapping keys. If multiple
+	// mappings have the same key, the result will be a concatenation of
+	// all the values with the order preserved.
+	for i, mapping := range m.Extra {
+		fldPath := fldPath.Child("extra").Index(i)
+		if len(mapping.Key) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Child("key"), "key is required"))
+		}
+		if len(mapping.ValueExpression) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Child("valueExpression"), "valueExpression is required"))
+			continue
+		}
+
+		allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.ExtraMappingCondition{
+			Expression: mapping.ValueExpression,
+		}, environment.StoredExpressions, fldPath.Child("valueExpression"))...)
 	}
 
 	return allErrs
+}
+
+func validateUserValidationRules(compiler authenticationcel.Compiler, rules []api.UserValidationRule, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	seenRules := sets.NewString()
+	for i, rule := range rules {
+		fldPath := fldPath.Index(i)
+
+		if len(rule.Rule) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Child("rule"), "rule is required"))
+			continue
+		}
+
+		if seenRules.Has(rule.Rule) {
+			allErrs = append(allErrs, field.Duplicate(fldPath.Child("rule"), rule.Rule))
+			continue
+		}
+		seenRules.Insert(rule.Rule)
+
+		allErrs = append(allErrs, validateCELCondition(compiler, &authenticationcel.UserInfoValidationCondition{
+			Expression: rule.Rule,
+		}, environment.StoredExpressions, fldPath.Child("rule"))...)
+	}
+
+	return allErrs
+}
+
+func validateCELCondition(compiler authenticationcel.Compiler, expression authenticationcel.ExpressionAccessor, envType environment.Type, fldPath *field.Path) field.ErrorList {
+	var allErrors field.ErrorList
+	result := compiler.CompileCELExpression(expression, envType)
+	if result.Error != nil {
+		allErrors = append(allErrors, convertCELErrorToValidationError(fldPath, expression, result.Error))
+	}
+	return allErrors
+}
+
+func convertCELErrorToValidationError(fldPath *field.Path, expression authenticationcel.ExpressionAccessor, err error) *field.Error {
+	var celErr *cel.Error
+	if errors.As(err, &celErr) {
+		// if celErr, ok := err.(*cel.Error); ok {
+		switch celErr.Type {
+		case cel.ErrorTypeRequired:
+			return field.Required(fldPath, celErr.Detail)
+		case cel.ErrorTypeInvalid:
+			return field.Invalid(fldPath, expression.GetExpression(), celErr.Detail)
+		case cel.ErrorTypeInternal:
+			return field.InternalError(fldPath, celErr)
+		}
+	}
+	return field.InternalError(fldPath, fmt.Errorf("unsupported error type: %w", err))
 }
 
 // ValidateAuthorizationConfiguration validates a given AuthorizationConfiguration.
