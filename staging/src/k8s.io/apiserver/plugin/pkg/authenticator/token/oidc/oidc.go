@@ -284,7 +284,10 @@ func New(opts Options) (*Authenticator, error) {
 	}
 
 	verifierConfig := &oidc.Config{
-		ClientID:             opts.JWTAuthenticator.Issuer.Audiences[0],
+		// The oidc config only supports a single audience, but we support multiple
+		// audiences in the JWTAuthenticator.  We'll verify the audience ourselves
+		// using validateAudience.
+		SkipClientIDCheck:    true,
 		SupportedSigningAlgs: supportedSigningAlgs,
 		Now:                  now,
 	}
@@ -292,7 +295,7 @@ func New(opts Options) (*Authenticator, error) {
 	var resolver *claimResolver
 	groupsClaim := opts.JWTAuthenticator.ClaimMappings.Groups.Claim
 	if groupsClaim != "" {
-		resolver = newClaimResolver(groupsClaim, client, verifierConfig)
+		resolver = newClaimResolver(groupsClaim, client, verifierConfig, opts.JWTAuthenticator.Issuer.Audiences)
 	}
 
 	authenticator := &Authenticator{
@@ -479,12 +482,14 @@ type claimResolver struct {
 	// Guarded by m.
 	verifierPerIssuer map[string]*asyncIDTokenVerifier
 
+	audiences []string
+
 	m sync.Mutex
 }
 
 // newClaimResolver creates a new resolver for distributed claims.
-func newClaimResolver(claim string, client *http.Client, config *oidc.Config) *claimResolver {
-	return &claimResolver{claim: claim, client: client, config: config, verifierPerIssuer: map[string]*asyncIDTokenVerifier{}}
+func newClaimResolver(claim string, client *http.Client, config *oidc.Config, audiences []string) *claimResolver {
+	return &claimResolver{claim: claim, client: client, config: config, verifierPerIssuer: map[string]*asyncIDTokenVerifier{}, audiences: audiences}
 }
 
 // Verifier returns either the verifier for the specified issuer, or error.
@@ -601,6 +606,9 @@ func (r *claimResolver) resolve(ctx context.Context, endpoint endpoint, allClaim
 	if err != nil {
 		return fmt.Errorf("verify distributed claim token: %v", err)
 	}
+	if err := verifyAudience(v, t, r.audiences); err != nil {
+		return err
+	}
 	var distClaims claims
 	if err := t.Claims(&distClaims); err != nil {
 		return fmt.Errorf("could not parse distributed claims for claim %v: %v", r.claim, err)
@@ -626,6 +634,9 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (*a
 	idToken, err := verifier.Verify(ctx, token)
 	if err != nil {
 		return nil, false, fmt.Errorf("oidc: verify token: %v", err)
+	}
+	if err := verifyAudience(verifier, idToken, a.jwtAuthenticator.Issuer.Audiences); err != nil {
+		return nil, false, err
 	}
 
 	var c claims
@@ -967,4 +978,30 @@ func (c claims) hasClaim(name string) bool {
 		return false
 	}
 	return true
+}
+
+func verifyAudience(verifier *oidc.IDTokenVerifier, idToken *oidc.IDToken, audiences []string) error {
+	// At least one of the entries in audiences must match the "aud" claim in the ID token.
+	// See: http://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation
+
+	if len(audiences) == 0 { // this should never happen since we check in validation
+		return fmt.Errorf("oidc: invalid configuration, audiences must be provided")
+	}
+
+	for _, aud := range audiences {
+		if contains(idToken.Audience, aud) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("oidc: expected audience %q, got %q", audiences, idToken.Audience)
+}
+
+func contains(sli []string, ele string) bool {
+	for _, s := range sli {
+		if s == ele {
+			return true
+		}
+	}
+	return false
 }
