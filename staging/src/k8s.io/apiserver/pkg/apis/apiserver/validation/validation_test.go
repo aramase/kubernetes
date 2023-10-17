@@ -49,19 +49,30 @@ func TestValidateAuthenticationConfiguration(t *testing.T) {
 		want string
 	}{
 		{
-			name: "jwt authenticator is empty",
-			in:   &api.AuthenticationConfiguration{},
-			want: "jwt: Required value: at least one jwt is required",
-		},
-		{
-			name: ">1 jwt authenticator",
+			name: "duplicate issuer",
 			in: &api.AuthenticationConfiguration{
 				JWT: []api.JWTAuthenticator{
-					{Issuer: api.Issuer{URL: "https://issuer-url", Audiences: []string{"audience"}}},
-					{Issuer: api.Issuer{URL: "https://issuer-url", Audiences: []string{"audience"}}},
+					{
+						Issuer: api.Issuer{
+							URL:       "https://issuer-url",
+							Audiences: []string{"audience"},
+						},
+						ClaimMappings: api.ClaimMappings{
+							Username: api.PrefixedClaimOrExpression{
+								Claim:  "claim",
+								Prefix: pointer.String("prefix"),
+							},
+						},
+					},
+					{
+						Issuer: api.Issuer{
+							URL:       "https://issuer-url",
+							Audiences: []string{"audience"},
+						},
+					},
 				},
 			},
-			want: "jwt: Too many: 2: must have at most 1 items",
+			want: `jwt[1].issuer.url: Duplicate value: "https://issuer-url"`,
 		},
 		{
 			name: "failed issuer validation",
