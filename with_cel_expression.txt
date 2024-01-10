@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: k8s.io/kubernetes/test/integration/apiserver/oidc
+cpu: AMD EPYC 7763 64-Core Processor
+BenchmarkWithCELExpression-8   	1647	    726964 ns/op	   61837 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1546	    731079 ns/op	   61791 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1516	    728981 ns/op	   61788 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1635	    715250 ns/op	   61821 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1450	    725832 ns/op	   61793 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1656	    745054 ns/op	   61785 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1587	    742019 ns/op	   61798 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1448	    755884 ns/op	   61798 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1344	    768421 ns/op	   61806 B/op	     895 allocs/op
+BenchmarkWithCELExpression-8   	1550	    725720 ns/op	   61787 B/op	     895 allocs/op
+PASS
+ok  	k8s.io/kubernetes/test/integration/apiserver/oidc	104.543s

@@ -79,7 +79,7 @@ func (ts *TestServer) TokenURL() (string, error) {
 }
 
 // BuildAndRunTestServer configures OIDC TLS server and its routing
-func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath string) *TestServer {
+func BuildAndRunTestServer(t testing.TB, caPath, caKeyPath string) *TestServer {
 	t.Helper()
 
 	certContent, err := os.ReadFile(caPath)
@@ -173,7 +173,7 @@ func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath string) *TestServer {
 // TokenHandlerBehaviorReturningPredefinedJWT describes the scenario when signed JWT token is being created.
 // This behavior should being applied to the MockTokenHandler.
 func TokenHandlerBehaviorReturningPredefinedJWT(
-	t *testing.T,
+	t testing.TB,
 	rsaPrivateKey *rsa.PrivateKey,
 	claims map[string]interface{}, accessToken, refreshToken string,
 ) func() (Token, error) {
@@ -201,7 +201,7 @@ func TokenHandlerBehaviorReturningPredefinedJWT(
 
 // DefaultJwksHandlerBehavior describes the scenario when JSON Web Key Set token is being returned.
 // This behavior should being applied to the MockJWKsHandler.
-func DefaultJwksHandlerBehavior(t *testing.T, verificationPublicKey *rsa.PublicKey) func() jose.JSONWebKeySet {
+func DefaultJwksHandlerBehavior(t testing.TB, verificationPublicKey *rsa.PublicKey) func() jose.JSONWebKeySet {
 	t.Helper()
 
 	return func() jose.JSONWebKeySet {
