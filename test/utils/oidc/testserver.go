@@ -80,7 +80,7 @@ func (ts *TestServer) TokenURL() (string, error) {
 }
 
 // BuildAndRunTestServer configures OIDC TLS server and its routing
-func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath, issuerOverride string) *TestServer {
+func BuildAndRunTestServer(t testing.TB, caPath, caKeyPath, issuerOverride string) *TestServer {
 	t.Helper()
 
 	certContent, err := os.ReadFile(caPath)
@@ -159,7 +159,7 @@ func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath, issuerOverride strin
 	return oidcServer
 }
 
-func discoveryDocHandler(t *testing.T, writer http.ResponseWriter, httpServerURL, issuer string) {
+func discoveryDocHandler(t testing.TB, writer http.ResponseWriter, httpServerURL, issuer string) {
 	authURL, err := url.JoinPath(httpServerURL + authWebPath)
 	require.NoError(t, err)
 	tokenURL, err := url.JoinPath(httpServerURL + tokenWebPath)
@@ -194,7 +194,7 @@ type JosePrivateKey interface {
 // TokenHandlerBehaviorReturningPredefinedJWT describes the scenario when signed JWT token is being created.
 // This behavior should being applied to the MockTokenHandler.
 func TokenHandlerBehaviorReturningPredefinedJWT[K JosePrivateKey](
-	t *testing.T,
+	t testing.TB,
 	privateKey K,
 	claims map[string]interface{}, accessToken, refreshToken string,
 ) func() (Token, error) {
@@ -226,7 +226,7 @@ type JosePublicKey interface {
 
 // DefaultJwksHandlerBehavior describes the scenario when JSON Web Key Set token is being returned.
 // This behavior should being applied to the MockJWKsHandler.
-func DefaultJwksHandlerBehavior[K JosePublicKey](t *testing.T, verificationPublicKey K) func() jose.JSONWebKeySet {
+func DefaultJwksHandlerBehavior[K JosePublicKey](t testing.TB, verificationPublicKey K) func() jose.JSONWebKeySet {
 	t.Helper()
 
 	return func() jose.JSONWebKeySet {
