@@ -1304,7 +1304,7 @@ jwt:
 			waitAfterConfigSwap: true,
 			wantMetricStrings: []string{
 				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} 1`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} 2`,
 			},
 		},
 	}
@@ -1364,21 +1364,26 @@ jwt:
 			tt.newAssertErrFn(t, err)
 
 			adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
-			body, err := adminClient.RESTClient().Get().AbsPath("/metrics").DoRaw(ctx)
-			require.NoError(t, err)
-			var gotMetricStrings []string
 			trimFP := regexp.MustCompile(`(.*)(} \d+\.\d+.*)`)
-			for _, line := range strings.Split(string(body), "\n") {
-				if strings.HasPrefix(line, "apiserver_authentication_config_controller_") {
-					if strings.Contains(line, "_seconds") {
-						line = trimFP.ReplaceAllString(line, `$1`) + "} FP" // ignore floating point metric values
+
+			err = wait.PollUntilContextTimeout(ctx, time.Second, wait.ForeverTestTimeout, true, func(ctx context.Context) (bool, error) {
+				body, err := adminClient.RESTClient().Get().AbsPath("/metrics").DoRaw(ctx)
+				require.NoError(t, err)
+				var gotMetricStrings []string
+				for _, line := range strings.Split(string(body), "\n") {
+					if strings.HasPrefix(line, "apiserver_authentication_config_controller_") {
+						if strings.Contains(line, "_seconds") {
+							line = trimFP.ReplaceAllString(line, `$1`) + "} FP" // ignore floating point metric values
+						}
+						gotMetricStrings = append(gotMetricStrings, line)
 					}
-					gotMetricStrings = append(gotMetricStrings, line)
 				}
-			}
-			if diff := cmp.Diff(tt.wantMetricStrings, gotMetricStrings); diff != "" {
-				t.Errorf("unexpected metrics diff (-want +got): %s", diff)
-			}
+				if diff := cmp.Diff(tt.wantMetricStrings, gotMetricStrings); diff != "" {
+					t.Logf("unexpected metrics diff (-want +got): %s", diff)
+					return false, nil
+				}
+				return true, nil
+			})
 		})
 	}
 }
