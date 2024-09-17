@@ -593,6 +593,10 @@ type CredentialProviderConfig struct {
 	// for a single image, the results are combined. If providers return overlapping
 	// auth keys, the value from the provider earlier in this list is used.
 	Providers []CredentialProvider
+
+	// sister field to provider that's a slice of passthrough providers
+	// matchImages + audience
+	// this will just pass the service account token through to the CRI
 }
 
 // CredentialProvider represents an exec plugin to be invoked by the kubelet. The plugin is only
@@ -648,6 +652,11 @@ type CredentialProvider struct {
 	// to pass argument to the plugin.
 	// +optional
 	Env []ExecEnvVar
+
+	// Audience is the intended audience for the credentials. If set, the kubelet will
+	// generate a service account token for the audience and pass it to the plugin.
+	// +optional
+	Audience string
 }
 
 // ExecEnvVar is used for setting environment variables when executing an exec-based

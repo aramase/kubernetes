@@ -78,6 +78,7 @@ func autoConvert_v1_CredentialProvider_To_config_CredentialProvider(in *configv1
 	out.APIVersion = in.APIVersion
 	out.Args = *(*[]string)(unsafe.Pointer(&in.Args))
 	out.Env = *(*[]config.ExecEnvVar)(unsafe.Pointer(&in.Env))
+	out.Audience = in.Audience
 	return nil
 }
 
@@ -93,6 +94,7 @@ func autoConvert_config_CredentialProvider_To_v1_CredentialProvider(in *config.C
 	out.APIVersion = in.APIVersion
 	out.Args = *(*[]string)(unsafe.Pointer(&in.Args))
 	out.Env = *(*[]configv1.ExecEnvVar)(unsafe.Pointer(&in.Env))
+	out.Audience = in.Audience
 	return nil
 }
 

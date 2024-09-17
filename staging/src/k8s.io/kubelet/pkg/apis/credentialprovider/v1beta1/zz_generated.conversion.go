@@ -94,6 +94,8 @@ func Convert_credentialprovider_AuthConfig_To_v1beta1_AuthConfig(in *credentialp
 
 func autoConvert_v1beta1_CredentialProviderRequest_To_credentialprovider_CredentialProviderRequest(in *CredentialProviderRequest, out *credentialprovider.CredentialProviderRequest, s conversion.Scope) error {
 	out.Image = in.Image
+	out.ServiceAccountToken = in.ServiceAccountToken
+	out.PodAnnotations = *(*map[string]string)(unsafe.Pointer(&in.PodAnnotations))
 	return nil
 }
 
@@ -104,6 +106,8 @@ func Convert_v1beta1_CredentialProviderRequest_To_credentialprovider_CredentialP
 
 func autoConvert_credentialprovider_CredentialProviderRequest_To_v1beta1_CredentialProviderRequest(in *credentialprovider.CredentialProviderRequest, out *CredentialProviderRequest, s conversion.Scope) error {
 	out.Image = in.Image
+	out.ServiceAccountToken = in.ServiceAccountToken
+	out.PodAnnotations = *(*map[string]string)(unsafe.Pointer(&in.PodAnnotations))
 	return nil
 }
 

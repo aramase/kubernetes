@@ -1036,6 +1036,11 @@ type CredentialProvider struct {
 	// to pass argument to the plugin.
 	// +optional
 	Env []ExecEnvVar `json:"env,omitempty"`
+
+	// Audience is the intended audience for the credentials. If set, the kubelet will
+	// generate a service account token for the audience and pass it to the plugin.
+	// +optional
+	Audience string `json:"audience,omitempty"`
 }
 
 // ExecEnvVar is used for setting environment variables when executing an exec-based

@@ -32,6 +32,16 @@ type CredentialProviderRequest struct {
 	// credential provider plugin request. Plugins may optionally parse the image
 	// to extract any information required to fetch credentials.
 	Image string
+
+	// serviceAccountToken is the service account token bound to the pod for which
+	// the image is being pulled. This token is only sent to the plugin if the
+	// audience field is configured in the kubelet's credential provider configuration.
+	ServiceAccountToken string
+
+	// podAnnotations is a map of annotations on the pod for which the image is being pulled.
+	// This field is optional and may be empty. Plugins may use this field to extract
+	// additional information required to fetch credentials.
+	PodAnnotations map[string]string
 }
 
 type PluginCacheKeyType string
@@ -40,14 +50,37 @@ const (
 	// ImagePluginCacheKeyType means the kubelet will cache credentials on a per-image basis,
 	// using the image passed from the kubelet directly as the cache key. This includes
 	// the registry domain, port (if specified), and path but does not include tags or SHAs.
+	// If the credential provider is configured with the audience field and the service account token is sent to the plugin:
+	//   - If the cache mode is ServiceAccount, the cache key will be the service account info + image
+	//     to ensure that the credentials are cached per service account for the image.
+	//   - If the cache mode is None, the cache key will be the image.
 	ImagePluginCacheKeyType PluginCacheKeyType = "Image"
+
 	// RegistryPluginCacheKeyType means the kubelet will cache credentials on a per-registry basis.
 	// The cache key will be based on the registry domain and port (if present) parsed from the requested image.
+	// If the credential provider is configured with the audience field and the service account token is sent to the plugin:
+	//   - If the cache mode is ServiceAccount, the cache key will be the service account info + registry
+	//     to ensure that the credentials are cached per service account for the registry.
+	//   - If the cache mode is None, the cache key will be the registry.
 	RegistryPluginCacheKeyType PluginCacheKeyType = "Registry"
+
 	// GlobalPluginCacheKeyType means the kubelet will cache credentials for all images that
 	// match for a given plugin. This cache key should only be returned by plugins that do not use
 	// the image input at all.
 	GlobalPluginCacheKeyType PluginCacheKeyType = "Global"
+)
+
+type PluginCacheMode string
+
+const (
+	// ServiceAccountPluginCacheMode means the kubelet will cache credentials on a per-service account basis in addition to the cache key type.
+	// This cache mode should be used when the plugin wants to cache credentials per service account for the image or registry.
+	// The cache key will be the service account info + cache key (image or registry).
+	// This cache mode has no effect if the cache key type is Global.
+	ServiceAccountPluginCacheMode PluginCacheMode = "ServiceAccount"
+
+	// NonePluginCacheMode means the kubelet will cache credentials based on the cache key type only (default behavior).
+	NonePluginCacheMode PluginCacheMode = "None"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -62,6 +95,12 @@ type CredentialProviderResponse struct {
 	// in the request. There are three valid values for the cache key type: Image, Registry, and
 	// Global. If an invalid value is specified, the response will NOT be used by the kubelet.
 	CacheKeyType PluginCacheKeyType
+
+	// cacheMode indicates the mode of caching to use based on the cache key type.
+	// This field is required if the audience field is configured in the kubelet's credential provider configuration.
+	// There are two valid values for the cache mode: ServiceAccount and None.
+	// If an invalid value is specified, the response will NOT be used by the kubelet.
+	CacheMode PluginCacheMode
 
 	// cacheDuration indicates the duration the provided credentials should be cached for.
 	// The kubelet will use this field to set the in-memory cache duration for credentials

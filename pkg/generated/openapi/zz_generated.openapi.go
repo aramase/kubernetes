@@ -61364,6 +61364,13 @@ func schema_k8sio_kubelet_config_v1_CredentialProvider(ref common.ReferenceCallb
 							},
 						},
 					},
+					"audience": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Audience is the intended audience for the credentials. If set, the kubelet will generate a service account token for the audience and pass it to the plugin.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"name", "matchImages", "defaultCacheDuration", "apiVersion"},
 			},
@@ -61518,6 +61525,13 @@ func schema_k8sio_kubelet_config_v1alpha1_CredentialProvider(ref common.Referenc
 							},
 						},
 					},
+					"audience": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Audience is the intended audience for the credentials. If set, the kubelet will generate a service account token for the audience and pass it to the plugin.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"name", "matchImages", "defaultCacheDuration", "apiVersion"},
 			},
@@ -61670,6 +61684,13 @@ func schema_k8sio_kubelet_config_v1beta1_CredentialProvider(ref common.Reference
 									},
 								},
 							},
+						},
+					},
+					"audience": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Audience is the intended audience for the credentials. If set, the kubelet will generate a service account token for the audience and pass it to the plugin.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

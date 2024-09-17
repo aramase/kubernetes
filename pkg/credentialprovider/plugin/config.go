@@ -18,9 +18,8 @@ package plugin
 
 import (
 	"fmt"
-	"strings"
-
 	"os"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/credentialprovider"
@@ -123,6 +122,8 @@ func validateCredentialProviderConfig(config *kubeletconfig.CredentialProviderCo
 		if provider.DefaultCacheDuration != nil && provider.DefaultCacheDuration.Duration < 0 {
 			allErrs = append(allErrs, field.Invalid(fieldPath.Child("defaultCacheDuration"), provider.DefaultCacheDuration.Duration, "defaultCacheDuration must be greater than or equal to 0"))
 		}
+
+		// TODO(aramase): add validation here for audience and feature gate
 	}
 
 	return allErrs

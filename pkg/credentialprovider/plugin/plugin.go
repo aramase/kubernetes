@@ -136,9 +136,10 @@ func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialPro
 	clock := clock.RealClock{}
 
 	return &pluginProvider{
-		clock:                clock,
-		matchImages:          provider.MatchImages,
-		cache:                cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
+		clock:       clock,
+		matchImages: provider.MatchImages,
+		cache:       cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
+		// TODO(aramase): how is the default cache duration impacted in the service account token scenario?
 		defaultCacheDuration: provider.DefaultCacheDuration.Duration,
 		lastCachePurge:       clock.Now(),
 		plugin: &execPlugin{
@@ -149,6 +150,7 @@ func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialPro
 			args:         provider.Args,
 			envVars:      provider.Env,
 			environ:      os.Environ,
+			audience:     provider.Audience,
 		},
 	}, nil
 }
@@ -369,6 +371,7 @@ type execPlugin struct {
 	envVars      []kubeletconfig.ExecEnvVar
 	pluginBinDir string
 	environ      func() []string
+	audience     string
 }
 
 // ExecPlugin executes the plugin binary with arguments and environment variables specified in CredentialProviderConfig:
