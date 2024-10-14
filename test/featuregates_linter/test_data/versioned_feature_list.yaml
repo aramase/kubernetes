@@ -1022,6 +1022,12 @@
     lockToDefault: false
     preRelease: Beta
     version: "1.29"
+- name: ServiceAccountNodeAudienceRestriction
+  versionedSpecs:
+  - default: true
+    lockToDefault: false
+    preRelease: Beta
+    version: "1.32"
 - name: ServiceAccountTokenJTI
   versionedSpecs:
   - default: false
