@@ -28,11 +28,8 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/kubernetes/pkg/features"
-
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,9 +38,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/util/feature"
 	corev1lister "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/featuregate"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	kubeletapis "k8s.io/kubelet/pkg/apis"
 	authenticationapi "k8s.io/kubernetes/pkg/apis/authentication"
 	certificatesapi "k8s.io/kubernetes/pkg/apis/certificates"
@@ -51,8 +51,9 @@ import (
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/policy"
 	resourceapi "k8s.io/kubernetes/pkg/apis/resource"
-	storage "k8s.io/kubernetes/pkg/apis/storage"
+	"k8s.io/kubernetes/pkg/apis/storage"
 	"k8s.io/kubernetes/pkg/auth/nodeidentifier"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/utils/pointer"
 )
 
@@ -214,13 +215,16 @@ func setForbiddenUpdateLabels(node *api.Node, value string) *api.Node {
 }
 
 type admitTestCase struct {
-	name        string
-	podsGetter  corev1lister.PodLister
-	nodesGetter corev1lister.NodeLister
-	attributes  admission.Attributes
-	features    featuregate.FeatureGate
-	setupFunc   func(t *testing.T)
-	err         string
+	name            string
+	podsGetter      corev1lister.PodLister
+	nodesGetter     corev1lister.NodeLister
+	csiDriverGetter storagelisters.CSIDriverLister
+	pvcGetter       corev1lister.PersistentVolumeClaimLister
+	pvGetter        corev1lister.PersistentVolumeLister
+	attributes      admission.Attributes
+	features        featuregate.FeatureGate
+	setupFunc       func(t *testing.T)
+	err             string
 }
 
 func (a *admitTestCase) run(t *testing.T) {
@@ -234,6 +238,9 @@ func (a *admitTestCase) run(t *testing.T) {
 		}
 		c.podsGetter = a.podsGetter
 		c.nodesGetter = a.nodesGetter
+		c.csiDriverGetter = a.csiDriverGetter
+		c.pvcGetter = a.pvcGetter
+		c.pvGetter = a.pvGetter
 		err := c.Admit(context.TODO(), a.attributes, nil)
 		if (err == nil) != (len(a.err) == 0) {
 			t.Errorf("nodePlugin.Admit() error = %v, expected %v", err, a.err)
@@ -387,7 +394,103 @@ func Test_nodePlugin_Admit(t *testing.T) {
 		abLabeledPod = withLabels(coremypod, labelsAB)
 
 		privKey, _ = rsa.GenerateKey(rand.Reader, 2048)
+
+		csiDriverWithAudience = &storagev1.CSIDriver{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "com.example.csi/mydriver",
+			},
+			Spec: storagev1.CSIDriverSpec{
+				TokenRequests: []storagev1.TokenRequest{
+					{
+						Audience: "foo",
+					},
+				},
+			},
+		}
+
+		csiDriverIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		csiDriverLister = storagelisters.NewCSIDriverLister(csiDriverIndex)
+
+		noexistingCSIDriverIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		noexistingCSIDriverLister = storagelisters.NewCSIDriverLister(noexistingCSIDriverIndex)
+
+		pvcWithCSIDriver = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pvclaim",
+				Namespace: "ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				VolumeName: "pvname",
+			},
+		}
+
+		ephemeralVolumePVCWithCSIDriver = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "myephemeralpod-myvol",
+				Namespace: "ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				VolumeName: "pvname",
+			},
+		}
+
+		pvcIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		pvcLister = corev1lister.NewPersistentVolumeClaimLister(pvcIndex)
+
+		noexistingPVCIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		noexistingPVCLister = corev1lister.NewPersistentVolumeClaimLister(noexistingPVCIndex)
+
+		pvWithCSIDriver = &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pvname",
+			},
+			Spec: corev1.PersistentVolumeSpec{
+				PersistentVolumeSource: corev1.PersistentVolumeSource{
+					CSI: &corev1.CSIPersistentVolumeSource{Driver: "com.example.csi/mydriver"},
+				},
+			},
+		}
+
+		pvIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		pvLister = corev1lister.NewPersistentVolumeLister(pvIndex)
+
+		noexistingPVIndex  = cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+		noexistingPVLister = corev1lister.NewPersistentVolumeLister(noexistingPVIndex)
 	)
+
+	// create pods for validating the service account node audience restriction
+	projectedVolumeSource := &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: "foo"}}}}
+	csiDriverVolumeSource := &corev1.CSIVolumeSource{Driver: "com.example.csi/mydriver"}
+	persistentVolumeClaimVolumeSource := &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "pvclaim"}
+	ephemeralVolumeSource := &corev1.EphemeralVolumeSource{VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{}}
+
+	coremypodWithProjectedServiceAccount, v1mypodWithProjectedServiceAccount := makeTestPod("ns", "mysapod", "mynode", false)
+	v1mypodWithProjectedServiceAccount.Spec.Volumes = []corev1.Volume{{VolumeSource: corev1.VolumeSource{Projected: projectedVolumeSource}}}
+
+	coremypodWithCSI, v1mypodWithCSI := makeTestPod("ns", "mycsipod", "mynode", false)
+	v1mypodWithCSI.Spec.Volumes = []corev1.Volume{{VolumeSource: corev1.VolumeSource{CSI: csiDriverVolumeSource}}}
+
+	coremypodWithPVCRefCSI, v1mypodWithPVCRefCSI := makeTestPod("ns", "mypvcpod", "mynode", false)
+	v1mypodWithPVCRefCSI.Spec.Volumes = []corev1.Volume{{VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: persistentVolumeClaimVolumeSource}}}
+
+	coremypodWithEphemeralVolume, v1mypodWithEphemeralVolume := makeTestPod("ns", "myephemeralpod", "mynode", false)
+	v1mypodWithEphemeralVolume.Spec.Volumes = []corev1.Volume{{Name: "myvol", VolumeSource: corev1.VolumeSource{Ephemeral: ephemeralVolumeSource}}}
+
+	coremypodWithPVCAndCSI, v1mypodWithPVCAndCSI := makeTestPod("ns", "mypvcandcsipod", "mynode", false)
+	v1mypodWithPVCAndCSI.Spec.Volumes = []corev1.Volume{{VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: persistentVolumeClaimVolumeSource}}, {VolumeSource: corev1.VolumeSource{CSI: csiDriverVolumeSource}}}
+
+	if err := csiDriverIndex.Add(csiDriverWithAudience); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := pvcIndex.Add(pvcWithCSIDriver); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := pvcIndex.Add(ephemeralVolumePVCWithCSIDriver); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := pvIndex.Add(pvWithCSIDriver); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	existingPodsIndex.Add(v1mymirrorpod)
 	existingPodsIndex.Add(v1othermirrorpod)
@@ -395,6 +498,21 @@ func Test_nodePlugin_Admit(t *testing.T) {
 	existingPodsIndex.Add(v1mypod)
 	existingPodsIndex.Add(v1otherpod)
 	existingPodsIndex.Add(v1unboundpod)
+	if err := existingPodsIndex.Add(v1mypodWithProjectedServiceAccount); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := existingPodsIndex.Add(v1mypodWithCSI); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := existingPodsIndex.Add(v1mypodWithPVCRefCSI); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := existingPodsIndex.Add(v1mypodWithEphemeralVolume); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := existingPodsIndex.Add(v1mypodWithPVCAndCSI); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	existingNodesIndex.Add(&corev1.Node{ObjectMeta: mynodeObjMeta})
 
@@ -1114,6 +1232,101 @@ func Test_nodePlugin_Admit(t *testing.T) {
 			name:       "allow create of token bound to pod scheduled this node",
 			podsGetter: existingPods,
 			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypod.Name, coremypod.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:       "forbid create of token when audience not in pod spec and ServiceAccountNodeAudienceRestriction is enabled",
+			podsGetter: existingPods,
+			features:   feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypod.Name, coremypod.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+			err:        `serviceaccounts "mysa" is forbidden: audience "foo" not found in pod spec volume`,
+		},
+		{
+			name:       "allow create of token when audience in PSAT volume and ServiceAccountNodeAudienceRestriction is enabled",
+			podsGetter: existingPods,
+			features:   feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithProjectedServiceAccount.Name, coremypodWithProjectedServiceAccount.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "allow create of token when audience in pod --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled",
+			podsGetter:      existingPods,
+			csiDriverGetter: csiDriverLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithCSI.Name, v1mypodWithCSI.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "allow create of token when audience in pod --> pvc --> pv --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled",
+			podsGetter:      existingPods,
+			csiDriverGetter: csiDriverLister,
+			pvcGetter:       pvcLister,
+			pvGetter:        pvLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithPVCRefCSI.Name, v1mypodWithPVCRefCSI.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "allow create of token when audience in pod --> ephemeral --> pvc --> pv --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled",
+			podsGetter:      existingPods,
+			csiDriverGetter: csiDriverLister,
+			pvcGetter:       pvcLister,
+			pvGetter:        pvLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithEphemeralVolume.Name, v1mypodWithEphemeralVolume.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "allow create of token when audience in pod --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled, pvc not found",
+			podsGetter:      existingPods,
+			csiDriverGetter: csiDriverLister,
+			pvcGetter:       noexistingPVCLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithPVCAndCSI.Name, v1mypodWithPVCAndCSI.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "allow create of token when audience in pod --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled, pv not found",
+			podsGetter:      existingPods,
+			csiDriverGetter: csiDriverLister,
+			pvcGetter:       pvcLister,
+			pvGetter:        noexistingPVLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithPVCAndCSI.Name, v1mypodWithPVCAndCSI.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+		},
+		{
+			name:            "forbid create of token when audience in pod --> csi --> driver --> tokenrequest with audience and ServiceAccountNodeAudienceRestriction is enabled, csidriver not found",
+			podsGetter:      existingPods,
+			csiDriverGetter: noexistingCSIDriverLister,
+			features:        feature.DefaultFeatureGate,
+			setupFunc: func(t *testing.T) {
+				t.Helper()
+				featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.ServiceAccountNodeAudienceRestriction, true)
+			},
+			attributes: admission.NewAttributesRecord(makeTokenRequest(coremypodWithCSI.Name, v1mypodWithCSI.UID), nil, tokenrequestKind, coremypod.Namespace, "mysa", svcacctResource, "token", admission.Create, &metav1.CreateOptions{}, false, mynode),
+			err:        `serviceaccounts "mysa" is forbidden: audience "foo" not found in pod spec volume`,
 		},
 
 		// Unrelated objects

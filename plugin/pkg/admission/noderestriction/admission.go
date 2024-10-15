@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/go-cmp/cmp"
+
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,7 +35,9 @@ import (
 	apiserveradmission "k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/client-go/informers"
 	corev1lister "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/component-base/featuregate"
+	"k8s.io/component-helpers/storage/ephemeral"
 	kubeletapis "k8s.io/kubelet/pkg/apis"
 	podutil "k8s.io/kubernetes/pkg/api/pod"
 	authenticationapi "k8s.io/kubernetes/pkg/apis/authentication"
@@ -43,7 +46,7 @@ import (
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/policy"
 	"k8s.io/kubernetes/pkg/apis/resource"
-	storage "k8s.io/kubernetes/pkg/apis/storage"
+	"k8s.io/kubernetes/pkg/apis/storage"
 	"k8s.io/kubernetes/pkg/auth/nodeidentifier"
 	"k8s.io/kubernetes/pkg/features"
 )
@@ -70,13 +73,17 @@ func NewPlugin(nodeIdentifier nodeidentifier.NodeIdentifier) *Plugin {
 // Plugin holds state for and implements the admission plugin.
 type Plugin struct {
 	*admission.Handler
-	nodeIdentifier nodeidentifier.NodeIdentifier
-	podsGetter     corev1lister.PodLister
-	nodesGetter    corev1lister.NodeLister
+	nodeIdentifier  nodeidentifier.NodeIdentifier
+	podsGetter      corev1lister.PodLister
+	nodesGetter     corev1lister.NodeLister
+	csiDriverGetter storagelisters.CSIDriverLister
+	pvcGetter       corev1lister.PersistentVolumeClaimLister
+	pvGetter        corev1lister.PersistentVolumeLister
 
 	expansionRecoveryEnabled                       bool
 	dynamicResourceAllocationEnabled               bool
 	allowInsecureKubeletCertificateSigningRequests bool
+	serviceAccountNodeAudienceRestriction          bool
 }
 
 var (
@@ -90,12 +97,16 @@ func (p *Plugin) InspectFeatureGates(featureGates featuregate.FeatureGate) {
 	p.expansionRecoveryEnabled = featureGates.Enabled(features.RecoverVolumeExpansionFailure)
 	p.dynamicResourceAllocationEnabled = featureGates.Enabled(features.DynamicResourceAllocation)
 	p.allowInsecureKubeletCertificateSigningRequests = featureGates.Enabled(features.AllowInsecureKubeletCertificateSigningRequests)
+	p.serviceAccountNodeAudienceRestriction = featureGates.Enabled(features.ServiceAccountNodeAudienceRestriction)
 }
 
 // SetExternalKubeInformerFactory registers an informer factory into Plugin
 func (p *Plugin) SetExternalKubeInformerFactory(f informers.SharedInformerFactory) {
 	p.podsGetter = f.Core().V1().Pods().Lister()
 	p.nodesGetter = f.Core().V1().Nodes().Lister()
+	p.csiDriverGetter = f.Storage().V1().CSIDrivers().Lister()
+	p.pvcGetter = f.Core().V1().PersistentVolumeClaims().Lister()
+	p.pvGetter = f.Core().V1().PersistentVolumes().Lister()
 }
 
 // ValidateInitialization validates the Plugin was initialized properly
@@ -108,6 +119,15 @@ func (p *Plugin) ValidateInitialization() error {
 	}
 	if p.nodesGetter == nil {
 		return fmt.Errorf("%s requires a node getter", PluginName)
+	}
+	if p.csiDriverGetter == nil {
+		return fmt.Errorf("%s requires a CSI driver getter", PluginName)
+	}
+	if p.pvcGetter == nil {
+		return fmt.Errorf("%s requires a PVC getter", PluginName)
+	}
+	if p.pvGetter == nil {
+		return fmt.Errorf("%s requires a PV getter", PluginName)
 	}
 	return nil
 }
@@ -594,6 +614,23 @@ func (p *Plugin) admitServiceAccount(nodeName string, a admission.Attributes) er
 		return admission.NewForbidden(a, fmt.Errorf("node requested token bound to a pod scheduled on a different node"))
 	}
 
+	if p.serviceAccountNodeAudienceRestriction {
+		// ensure all items in tr.Spec.Audiences are present in a volume mount in the pod
+		requestedAudience := ""
+		switch len(tr.Spec.Audiences) {
+		case 0:
+			requestedAudience = ""
+		case 1:
+			requestedAudience = tr.Spec.Audiences[0]
+		default:
+			return admission.NewForbidden(a, fmt.Errorf("node may only request 0 or 1 audiences"))
+		}
+
+		if foundAudiencesInPodSpec := p.podReferencesAudience(pod, requestedAudience); !foundAudiencesInPodSpec {
+			return admission.NewForbidden(a, fmt.Errorf("audience %q not found in pod spec volume", requestedAudience))
+		}
+	}
+
 	// Note: A token may only be bound to one object at a time. By requiring
 	// the Pod binding, noderestriction eliminates the opportunity to spoof
 	// a Node binding. Instead, kube-apiserver automatically infers and sets
@@ -601,6 +638,71 @@ func (p *Plugin) admitServiceAccount(nodeName string, a admission.Attributes) er
 	// https://github.com/kubernetes/kubernetes/issues/121723 for more info.
 
 	return nil
+}
+
+func (p *Plugin) podReferencesAudience(pod *v1.Pod, audience string) bool {
+	for _, v := range pod.Spec.Volumes {
+		if v.Projected != nil {
+			for _, src := range v.Projected.Sources {
+				if src.ServiceAccountToken != nil && src.ServiceAccountToken.Audience == audience {
+					return true
+				}
+			}
+		}
+
+		// also allow audiences for CSI token requests
+		// - pod --> ephemeral --> pvc --> pv --> csi --> driver --> tokenrequest with audience
+		// - pod --> pvc --> pv --> csi --> driver --> tokenrequest with audience
+		// - pod --> csi --> driver --> tokenrequest with audience
+		var driverName string
+		var err error
+		switch {
+		case v.Ephemeral != nil && v.Ephemeral.VolumeClaimTemplate != nil:
+			pvcName := ephemeral.VolumeClaimName(pod, &v)
+			driverName, err = getCSIFromPVC(p.pvcGetter, p.pvGetter, pod.Namespace, pvcName)
+		case v.PersistentVolumeClaim != nil:
+			driverName, err = getCSIFromPVC(p.pvcGetter, p.pvGetter, pod.Namespace, v.PersistentVolumeClaim.ClaimName)
+		case v.CSI != nil:
+			driverName = v.CSI.Driver
+		}
+
+		if err == nil && len(driverName) > 0 {
+			if hasAudience, hasAudienceErr := csiDriverHasAudience(p.csiDriverGetter, driverName, audience); hasAudienceErr == nil && hasAudience {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getCSIFromPVC returns the CSI driver name from the PVC->PV->CSI->Driver chain
+func getCSIFromPVC(pvcGetter corev1lister.PersistentVolumeClaimLister, pvGetter corev1lister.PersistentVolumeLister, namespace, claimName string) (string, error) {
+	pvc, err := pvcGetter.PersistentVolumeClaims(namespace).Get(claimName)
+	if err != nil {
+		return "", err
+	}
+	pv, err := pvGetter.Get(pvc.Spec.VolumeName)
+	if err != nil {
+		return "", err
+	}
+	if pv.Spec.CSI != nil {
+		return pv.Spec.CSI.Driver, nil
+	}
+	return "", nil
+}
+
+func csiDriverHasAudience(csiDriverGetter storagelisters.CSIDriverLister, driverName, audience string) (bool, error) {
+	driver, err := csiDriverGetter.Get(driverName)
+	if err != nil {
+		return false, err
+	}
+
+	for _, tokenRequest := range driver.Spec.TokenRequests {
+		if tokenRequest.Audience == audience {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (p *Plugin) admitLease(nodeName string, a admission.Attributes) error {
