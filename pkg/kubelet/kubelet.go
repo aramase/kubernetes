@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 	"go.opentelemetry.io/otel/trace"
+
 	"k8s.io/client-go/informers"
 	"k8s.io/mount-utils"
 
@@ -47,6 +48,7 @@ import (
 	netutils "k8s.io/utils/net"
 
 	inuserns "github.com/moby/sys/userns"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -73,6 +75,7 @@ import (
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
+	credentialproviderplugin "k8s.io/kubernetes/pkg/credentialprovider/plugin"
 	"k8s.io/kubernetes/pkg/features"
 	kubeletconfiginternal "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/apis/podresources"
@@ -661,6 +664,15 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		klet.podCache,
 	)
 
+	tokenManager := token.NewManager(kubeDeps.KubeClient)
+	var serviceAccountLister corelisters.ServiceAccountLister
+	var getServiceAccountToken credentialproviderplugin.GetServiceAccountTokenFunc
+	if utilfeature.DefaultFeatureGate.Enabled(features.KubeletServiceAccountTokenForCredentialProviders) {
+		kubeInformers := informers.NewSharedInformerFactoryWithOptions(kubeDeps.KubeClient, 0)
+		serviceAccountLister = kubeInformers.Core().V1().ServiceAccounts().Lister()
+		getServiceAccountToken = tokenManager.GetServiceAccountToken
+	}
+
 	runtime, err := kuberuntime.NewKubeGenericRuntimeManager(
 		kubecontainer.FilterEventRecorder(kubeDeps.Recorder),
 		klet.livenessManager,
@@ -693,6 +705,8 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		*kubeCfg.MemoryThrottlingFactor,
 		kubeDeps.PodStartupLatencyTracker,
 		kubeDeps.TracerProvider,
+		serviceAccountLister,
+		getServiceAccountToken,
 	)
 	if err != nil {
 		return nil, err
@@ -821,8 +835,6 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 			klet.runner,
 			kubeDeps.Recorder)
 	}
-
-	tokenManager := token.NewManager(kubeDeps.KubeClient)
 
 	var clusterTrustBundleManager clustertrustbundle.Manager
 	if kubeDeps.KubeClient != nil && utilfeature.DefaultFeatureGate.Enabled(features.ClusterTrustBundleProjection) {
@@ -2605,7 +2617,7 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 				}
 				// For new pod, checkpoint the resource values at which the Pod has been admitted
 				if err := kl.statusManager.SetPodAllocation(allocatedPod); err != nil {
-					//TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
+					// TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
 					klog.ErrorS(err, "SetPodAllocation failed", "pod", klog.KObj(pod))
 				}
 			} else {
@@ -2830,7 +2842,7 @@ func (kl *Kubelet) handlePodResourcesResize(pod *v1.Pod) (*v1.Pod, error) {
 	if resizeStatus != "" {
 		// Save resize decision to checkpoint
 		if err := kl.statusManager.SetPodResizeStatus(allocatedPod.UID, resizeStatus); err != nil {
-			//TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
+			// TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
 			klog.ErrorS(err, "SetPodResizeStatus failed", "pod", klog.KObj(allocatedPod))
 		}
 	}

@@ -28,8 +28,6 @@ import (
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	"go.opentelemetry.io/otel/trace"
 	grpcstatus "google.golang.org/grpc/status"
-	crierror "k8s.io/cri-api/pkg/errors"
-	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -38,13 +36,15 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/record"
 	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/component-base/logs/logreduction"
 	internalapi "k8s.io/cri-api/pkg/apis"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
-
+	crierror "k8s.io/cri-api/pkg/errors"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 	"k8s.io/kubernetes/pkg/credentialprovider/plugin"
@@ -161,7 +161,7 @@ type kubeGenericRuntimeManager struct {
 	// MemorySwapBehavior defines how swap is used
 	memorySwapBehavior string
 
-	//Function to get node allocatable resources
+	// Function to get node allocatable resources
 	getNodeAllocatable func() v1.ResourceList
 
 	// Memory throttling factor for MemoryQoS
@@ -169,6 +169,15 @@ type kubeGenericRuntimeManager struct {
 
 	// Root directory used to store pod logs
 	podLogsDirectory string
+
+	// serviceAccountLister is used to get service account information
+	// bound to a pod.
+	// The service account information is used by credential provider plugins
+	// to fetch credentials for pulling images with the KubeletServiceAccountTokenForCredentialProviders
+	// feature gate enabled.
+	serviceAccountLister corev1listers.ServiceAccountLister
+
+	getServiceAccountToken plugin.GetServiceAccountTokenFunc
 }
 
 // KubeGenericRuntime is a interface contains interfaces for container runtime and command.
@@ -211,6 +220,8 @@ func NewKubeGenericRuntimeManager(
 	memoryThrottlingFactor float64,
 	podPullingTimeRecorder images.ImagePodPullingTimeRecorder,
 	tracerProvider trace.TracerProvider,
+	serviceAccountLister corev1listers.ServiceAccountLister,
+	getServiceAccountToken plugin.GetServiceAccountTokenFunc,
 ) (KubeGenericRuntime, error) {
 	ctx := context.Background()
 	runtimeService = newInstrumentedRuntimeService(runtimeService)
@@ -239,6 +250,8 @@ func NewKubeGenericRuntimeManager(
 		getNodeAllocatable:     getNodeAllocatable,
 		memoryThrottlingFactor: memoryThrottlingFactor,
 		podLogsDirectory:       podLogsDirectory,
+		serviceAccountLister:   serviceAccountLister,
+		getServiceAccountToken: getServiceAccountToken,
 	}
 
 	typedVersion, err := kubeRuntimeManager.getTypedVersion(ctx)
@@ -263,7 +276,7 @@ func NewKubeGenericRuntimeManager(
 		"apiVersion", typedVersion.RuntimeApiVersion)
 
 	if imageCredentialProviderConfigFile != "" || imageCredentialProviderBinDir != "" {
-		if err := plugin.RegisterCredentialProviderPlugins(imageCredentialProviderConfigFile, imageCredentialProviderBinDir); err != nil {
+		if err := plugin.RegisterCredentialProviderPlugins(imageCredentialProviderConfigFile, imageCredentialProviderBinDir, getServiceAccountToken); err != nil {
 			klog.ErrorS(err, "Failed to register CRI auth plugins")
 			os.Exit(1)
 		}
@@ -652,7 +665,7 @@ func (m *kubeGenericRuntimeManager) computePodResizeAction(pod *v1.Pod, containe
 
 func (m *kubeGenericRuntimeManager) doPodResizeAction(pod *v1.Pod, podStatus *kubecontainer.PodStatus, podContainerChanges podActions, result kubecontainer.PodSyncResult) {
 	pcm := m.containerManager.NewPodContainerManager()
-	//TODO(vinaykul,InPlacePodVerticalScaling): Figure out best way to get enforceMemoryQoS value (parameter #4 below) in platform-agnostic way
+	// TODO(vinaykul,InPlacePodVerticalScaling): Figure out best way to get enforceMemoryQoS value (parameter #4 below) in platform-agnostic way
 	podResources := cm.ResourceConfigForPod(pod, m.cpuCFSQuota, uint64((m.cpuCFSQuotaPeriod.Duration)/time.Microsecond), false)
 	if podResources == nil {
 		klog.ErrorS(nil, "Unable to get resource configuration", "pod", pod.Name)
@@ -1374,6 +1387,12 @@ func (m *kubeGenericRuntimeManager) getImageVolumes(ctx context.Context, pod *v1
 		return nil, err
 	}
 
+	serviceAccount, err := m.serviceAccountLister.ServiceAccounts(pod.Namespace).Get(pod.Spec.ServiceAccountName)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get service account", "pod", klog.KObj(pod))
+		return nil, err
+	}
+
 	res := make(imageVolumePulls)
 	for _, volume := range pod.Spec.Volumes {
 		if volume.Image == nil {
@@ -1382,7 +1401,7 @@ func (m *kubeGenericRuntimeManager) getImageVolumes(ctx context.Context, pod *v1
 
 		objectRef, _ := ref.GetReference(legacyscheme.Scheme, pod) // objectRef can be nil, no error check required
 		ref, msg, err := m.imagePuller.EnsureImageExists(
-			ctx, objectRef, pod, volume.Image.Reference, pullSecrets, podSandboxConfig, podRuntimeHandler, volume.Image.PullPolicy,
+			ctx, objectRef, pod, serviceAccount, volume.Image.Reference, pullSecrets, podSandboxConfig, podRuntimeHandler, volume.Image.PullPolicy,
 		)
 		if err != nil {
 			klog.ErrorS(err, "Failed to ensure image", "pod", klog.KObj(pod))

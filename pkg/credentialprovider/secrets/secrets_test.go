@@ -20,7 +20,7 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 )
 
@@ -32,7 +32,7 @@ type fakeKeyring struct {
 
 // Lookup implements the DockerKeyring method for fetching credentials based on image name.
 // Returns fake results based on the auth and ok fields in fakeKeyring
-func (f *fakeKeyring) Lookup(image string) ([]credentialprovider.AuthConfig, bool) {
+func (f *fakeKeyring) Lookup(image string, pod *v1.Pod, sa *v1.ServiceAccount) ([]credentialprovider.AuthConfig, bool) {
 	return f.auth, f.ok
 }
 
@@ -269,7 +269,7 @@ func Test_MakeDockerKeyring(t *testing.T) {
 				t.Fatalf("error creating secret-based docker keyring: %v", err)
 			}
 
-			authConfigs, found := keyring.Lookup(testcase.image)
+			authConfigs, found := keyring.Lookup(testcase.image, nil, nil)
 			if found != testcase.found {
 				t.Logf("actual lookup status: %v", found)
 				t.Logf("expected lookup status: %v", testcase.found)

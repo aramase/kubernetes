@@ -535,7 +535,8 @@ func Test_validateCredentialProviderConfig(t *testing.T) {
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
-			errs := validateCredentialProviderConfig(testcase.config)
+			// TODO(aramase): add tests for psat for credentials providers feature gate enabled
+			errs := validateCredentialProviderConfig(testcase.config, false)
 
 			if testcase.shouldErr && len(errs) == 0 {
 				t.Errorf("expected error but got none")

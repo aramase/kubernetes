@@ -188,6 +188,7 @@ func NodeRules() []rbacv1.PolicyRule {
 	if utilfeature.DefaultFeatureGate.Enabled(features.ClusterTrustBundle) {
 		nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get", "list", "watch").Groups(certificatesGroup).Resources("clustertrustbundles").RuleOrDie())
 	}
+	// Kubelet needs access to service accounts to support PSAT for image pull secrets.
 
 	return nodePolicyRules
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -405,7 +406,7 @@ func TestParallelPuller(t *testing.T) {
 				fakeRuntime.CalledFunctions = nil
 				fakeClock.Step(time.Second)
 
-				_, msg, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+				_, msg, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 				fakeRuntime.AssertCalls(expected.calls)
 				assert.Equal(t, expected.err, err)
 				assert.Equal(t, expected.shouldRecordStartedPullingTime, fakePodPullingTimeRecorder.startedPullingRecorded)
@@ -438,7 +439,7 @@ func TestSerializedPuller(t *testing.T) {
 				fakeRuntime.CalledFunctions = nil
 				fakeClock.Step(time.Second)
 
-				_, msg, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+				_, msg, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 				fakeRuntime.AssertCalls(expected.calls)
 				assert.Equal(t, expected.err, err)
 				assert.Equal(t, expected.shouldRecordStartedPullingTime, fakePodPullingTimeRecorder.startedPullingRecorded)
@@ -502,7 +503,7 @@ func TestPullAndListImageWithPodAnnotations(t *testing.T) {
 		fakeRuntime.ImageList = []Image{}
 		fakeClock.Step(time.Second)
 
-		_, _, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+		_, _, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 		fakeRuntime.AssertCalls(c.expected[0].calls)
 		assert.Equal(t, c.expected[0].err, err, "tick=%d", 0)
 		assert.Equal(t, c.expected[0].shouldRecordStartedPullingTime, fakePodPullingTimeRecorder.startedPullingRecorded)
@@ -559,7 +560,7 @@ func TestPullAndListImageWithRuntimeHandlerInImageCriAPIFeatureGate(t *testing.T
 		fakeRuntime.ImageList = []Image{}
 		fakeClock.Step(time.Second)
 
-		_, _, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, runtimeHandler, container.ImagePullPolicy)
+		_, _, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, runtimeHandler, container.ImagePullPolicy)
 		fakeRuntime.AssertCalls(c.expected[0].calls)
 		assert.Equal(t, c.expected[0].err, err, "tick=%d", 0)
 		assert.Equal(t, c.expected[0].shouldRecordStartedPullingTime, fakePodPullingTimeRecorder.startedPullingRecorded)
@@ -618,7 +619,7 @@ func TestMaxParallelImagePullsLimit(t *testing.T) {
 	for i := 0; i < maxParallelImagePulls; i++ {
 		wg.Add(1)
 		go func() {
-			_, _, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+			_, _, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 			assert.NoError(t, err)
 			wg.Done()
 		}()
@@ -630,7 +631,7 @@ func TestMaxParallelImagePullsLimit(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
-			_, _, err := puller.EnsureImageExists(ctx, nil, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+			_, _, err := puller.EnsureImageExists(ctx, nil, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 			assert.NoError(t, err)
 			wg.Done()
 		}()
@@ -731,7 +732,7 @@ func TestImagePullPrecheck(t *testing.T) {
 				fakeRecorder.Events = []*v1.Event{}
 				fakeClock.Step(time.Second)
 
-				_, _, err := puller.EnsureImageExists(ctx, &v1.ObjectReference{}, pod, container.Image, nil, nil, "", container.ImagePullPolicy)
+				_, _, err := puller.EnsureImageExists(ctx, &v1.ObjectReference{}, pod, nil, container.Image, nil, nil, "", container.ImagePullPolicy)
 				fakeRuntime.AssertCalls(expected.calls)
 				var recorderEvents []v1.Event
 				for _, event := range fakeRecorder.Events {

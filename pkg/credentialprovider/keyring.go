@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
@@ -35,7 +36,7 @@ import (
 //     most specific match for a given image
 //   - iterating a map does not yield predictable results
 type DockerKeyring interface {
-	Lookup(image string) ([]AuthConfig, bool)
+	Lookup(image string, pod *v1.Pod, sa *v1.ServiceAccount) ([]AuthConfig, bool)
 }
 
 // BasicDockerKeyring is a trivial map-backed implementation of DockerKeyring
@@ -235,7 +236,7 @@ func URLsMatch(globURL *url.URL, targetURL *url.URL) (bool, error) {
 // Lookup implements the DockerKeyring method for fetching credentials based on image name.
 // Multiple credentials may be returned if there are multiple potentially valid credentials
 // available.  This allows for rotation.
-func (dk *BasicDockerKeyring) Lookup(image string) ([]AuthConfig, bool) {
+func (dk *BasicDockerKeyring) Lookup(image string, pod *v1.Pod, sa *v1.ServiceAccount) ([]AuthConfig, bool) {
 	// range over the index as iterating over a map does not provide a predictable ordering
 	ret := []AuthConfig{}
 	for _, k := range dk.index {
@@ -262,14 +263,14 @@ func (dk *BasicDockerKeyring) Lookup(image string) ([]AuthConfig, bool) {
 
 // Lookup implements the DockerKeyring method for fetching credentials
 // based on image name.
-func (dk *providersDockerKeyring) Lookup(image string) ([]AuthConfig, bool) {
+func (dk *providersDockerKeyring) Lookup(image string, pod *v1.Pod, serviceAccount *v1.ServiceAccount) ([]AuthConfig, bool) {
 	keyring := &BasicDockerKeyring{}
 
 	for _, p := range dk.Providers {
-		keyring.Add(p.Provide(image))
+		keyring.Add(p.Provide(image, pod, serviceAccount))
 	}
 
-	return keyring.Lookup(image)
+	return keyring.Lookup(image, pod, serviceAccount)
 }
 
 // FakeKeyring a fake config credentials
@@ -280,7 +281,7 @@ type FakeKeyring struct {
 
 // Lookup implements the DockerKeyring method for fetching credentials based on image name
 // return fake auth and ok
-func (f *FakeKeyring) Lookup(image string) ([]AuthConfig, bool) {
+func (f *FakeKeyring) Lookup(image string, pod *v1.Pod, sa *v1.ServiceAccount) ([]AuthConfig, bool) {
 	return f.auth, f.ok
 }
 
@@ -289,14 +290,14 @@ type UnionDockerKeyring []DockerKeyring
 
 // Lookup implements the DockerKeyring method for fetching credentials based on image name.
 // return each credentials
-func (k UnionDockerKeyring) Lookup(image string) ([]AuthConfig, bool) {
+func (k UnionDockerKeyring) Lookup(image string, pod *v1.Pod, sa *v1.ServiceAccount) ([]AuthConfig, bool) {
 	authConfigs := []AuthConfig{}
 	for _, subKeyring := range k {
 		if subKeyring == nil {
 			continue
 		}
 
-		currAuthResults, _ := subKeyring.Lookup(image)
+		currAuthResults, _ := subKeyring.Lookup(image, pod, sa)
 		authConfigs = append(authConfigs, currAuthResults...)
 	}
 

@@ -118,7 +118,7 @@ func (m *imageManager) logIt(objRef *v1.ObjectReference, eventtype, event, prefi
 
 // EnsureImageExists pulls the image for the specified pod and imgRef, and returns
 // (imageRef, error message, error).
-func (m *imageManager) EnsureImageExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, imgRef string, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig, podRuntimeHandler string, pullPolicy v1.PullPolicy) (imageRef, message string, err error) {
+func (m *imageManager) EnsureImageExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, serviceAccount *v1.ServiceAccount, imgRef string, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig, podRuntimeHandler string, pullPolicy v1.PullPolicy) (imageRef, message string, err error) {
 	logPrefix := fmt.Sprintf("%s/%s/%s", pod.Namespace, pod.Name, imgRef)
 
 	// If the image contains no tag or digest, a default tag should be applied.
@@ -175,7 +175,7 @@ func (m *imageManager) EnsureImageExists(ctx context.Context, objRef *v1.ObjectR
 	m.logIt(objRef, v1.EventTypeNormal, events.PullingImage, logPrefix, fmt.Sprintf("Pulling image %q", imgRef), klog.Info)
 	startTime := time.Now()
 	pullChan := make(chan pullResult)
-	m.puller.pullImage(ctx, spec, pullSecrets, pullChan, podSandboxConfig)
+	m.puller.pullImage(ctx, spec, pullSecrets, pod, serviceAccount, pullChan, podSandboxConfig)
 	imagePullResult := <-pullChan
 	if imagePullResult.err != nil {
 		m.logIt(objRef, v1.EventTypeWarning, events.FailedToPullImage, logPrefix, fmt.Sprintf("Failed to pull image %q: %v", imgRef, imagePullResult.err), klog.Warning)

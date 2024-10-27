@@ -19,6 +19,8 @@ package credentialprovider
 import (
 	"testing"
 	"time"
+
+	v1 "k8s.io/api/core/v1"
 )
 
 type testProvider struct {
@@ -31,7 +33,7 @@ func (d *testProvider) Enabled() bool {
 }
 
 // Provide implements dockerConfigProvider
-func (d *testProvider) Provide(image string) DockerConfig {
+func (d *testProvider) Provide(image string, pod *v1.Pod, sa *v1.ServiceAccount) DockerConfig {
 	d.Count++
 	return DockerConfig{}
 }
@@ -51,28 +53,28 @@ func TestCachingProvider(t *testing.T) {
 	if provider.Count != 0 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
 	if provider.Count != 1 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
 
 	time.Sleep(cache.Lifetime)
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
 	if provider.Count != 2 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
 
 	time.Sleep(cache.Lifetime)
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
-	cache.Provide(image)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
+	cache.Provide(image, nil, nil)
 	if provider.Count != 3 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}

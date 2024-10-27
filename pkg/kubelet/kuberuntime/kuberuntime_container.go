@@ -39,6 +39,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/armon/circbuf"
+
 	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
@@ -206,7 +207,12 @@ func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, podSandb
 		klog.ErrorS(err, "Couldn't make a ref to pod", "pod", klog.KObj(pod), "containerName", container.Name)
 	}
 
-	imageRef, msg, err := m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
+	serviceAccount, err := m.serviceAccountLister.ServiceAccounts(pod.Namespace).Get(pod.Spec.ServiceAccountName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get service account %q: %v", pod.Spec.ServiceAccountName, err)
+	}
+
+	imageRef, msg, err := m.imagePuller.EnsureImageExists(ctx, ref, pod, serviceAccount, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
 		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())

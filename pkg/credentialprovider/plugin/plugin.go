@@ -30,10 +30,15 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"k8s.io/utils/ptr"
+
+	authenticationv1 "k8s.io/api/authentication/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	credentialproviderapi "k8s.io/kubelet/pkg/apis/credentialprovider"
@@ -42,6 +47,7 @@ import (
 	credentialproviderv1alpha1 "k8s.io/kubelet/pkg/apis/credentialprovider/v1alpha1"
 	credentialproviderv1beta1 "k8s.io/kubelet/pkg/apis/credentialprovider/v1beta1"
 	"k8s.io/kubernetes/pkg/credentialprovider"
+	"k8s.io/kubernetes/pkg/features"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	kubeletconfigv1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1"
 	kubeletconfigv1alpha1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1alpha1"
@@ -65,6 +71,9 @@ var (
 	}
 )
 
+// GetServiceAccountTokenFunc is a function to get service account token for a pod.
+type GetServiceAccountTokenFunc func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error)
+
 func init() {
 	install.Install(scheme)
 	kubeletconfig.AddToScheme(scheme)
@@ -75,7 +84,7 @@ func init() {
 
 // RegisterCredentialProviderPlugins is called from kubelet to register external credential provider
 // plugins according to the CredentialProviderConfig config file.
-func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) error {
+func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string, getServiceAccountToken GetServiceAccountTokenFunc) error {
 	if _, err := os.Stat(pluginBinDir); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("plugin binary directory %s did not exist", pluginBinDir)
@@ -89,7 +98,8 @@ func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) er
 		return err
 	}
 
-	errs := validateCredentialProviderConfig(credentialProviderConfig)
+	saTokenForCredentialProviders := utilfeature.DefaultFeatureGate.Enabled(features.KubeletServiceAccountTokenForCredentialProviders)
+	errs := validateCredentialProviderConfig(credentialProviderConfig, saTokenForCredentialProviders)
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to validate credential provider config: %v", errs.ToAggregate())
 	}
@@ -109,7 +119,15 @@ func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) er
 			return fmt.Errorf("error inspecting binary executable %s: %w", pluginBin, err)
 		}
 
-		plugin, err := newPluginProvider(pluginBinDir, provider)
+		var fn GetServiceAccountTokenFunc
+		if len(provider.TokenAttributes.ServiceAccountTokenAudience) > 0 {
+			if getServiceAccountToken == nil {
+				return fmt.Errorf("service account token audience is specified in the credential provider config, but service account token function is not provided")
+			}
+			fn = getServiceAccountToken
+		}
+
+		plugin, err := newPluginProvider(pluginBinDir, provider, fn)
 		if err != nil {
 			return fmt.Errorf("error initializing plugin provider %s: %w", provider.Name, err)
 		}
@@ -121,7 +139,7 @@ func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) er
 }
 
 // newPluginProvider returns a new pluginProvider based on the credential provider config.
-func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialProvider) (*pluginProvider, error) {
+func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialProvider, getServiceAccountToken GetServiceAccountTokenFunc) (*pluginProvider, error) {
 	mediaType := "application/json"
 	info, ok := runtime.SerializerInfoForMediaType(codecs.SupportedMediaTypes(), mediaType)
 	if !ok {
@@ -136,11 +154,14 @@ func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialPro
 	clock := clock.RealClock{}
 
 	return &pluginProvider{
-		clock:                clock,
-		matchImages:          provider.MatchImages,
-		cache:                cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
-		defaultCacheDuration: provider.DefaultCacheDuration.Duration,
-		lastCachePurge:       clock.Now(),
+		clock:                        clock,
+		matchImages:                  provider.MatchImages,
+		cache:                        cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
+		defaultCacheDuration:         provider.DefaultCacheDuration.Duration,
+		lastCachePurge:               clock.Now(),
+		serviceAccountTokenAudience:  provider.TokenAttributes.ServiceAccountTokenAudience,
+		serviceAccountAnnotationKeys: provider.TokenAttributes.ServiceAccountAnnotationKeys,
+		getServiceAccountToken:       getServiceAccountToken,
 		plugin: &execPlugin{
 			name:         provider.Name,
 			apiVersion:   provider.APIVersion,
@@ -178,6 +199,17 @@ type pluginProvider struct {
 
 	// lastCachePurge is the last time cache is cleaned for expired entries.
 	lastCachePurge time.Time
+
+	// serviceAccountTokenAudience is the intended audience for the projected service account token.
+	serviceAccountTokenAudience string
+
+	// serviceAccountAnnotationKeys is the list of annotation keys that the plugin is interested in.
+	// The keys defined in this list will be extracted from the corresponding service account and passed
+	// to the plugin as part of the CredentialProviderRequest. The plugin is responsible for validating
+	// the existence of annotations and their values.
+	serviceAccountAnnotationKeys []string
+
+	getServiceAccountToken GetServiceAccountTokenFunc
 }
 
 // cacheEntry is the cache object that will be stored in cache.Store.
@@ -206,7 +238,7 @@ func (c *cacheExpirationPolicy) IsExpired(entry *cache.TimestampedEntry) bool {
 
 // Provide returns a credentialprovider.DockerConfig based on the credentials returned
 // from cache or the exec plugin.
-func (p *pluginProvider) Provide(image string) credentialprovider.DockerConfig {
+func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.ServiceAccount) credentialprovider.DockerConfig {
 	if !p.isImageAllowed(image) {
 		return credentialprovider.DockerConfig{}
 	}
@@ -228,7 +260,42 @@ func (p *pluginProvider) Provide(image string) credentialprovider.DockerConfig {
 	// foo.bar.registry/image1
 	// foo.bar.registry/image2
 	res, err, _ := p.group.Do(image, func() (interface{}, error) {
-		return p.plugin.ExecPlugin(context.Background(), image)
+		var serviceAccountToken string
+		var serviceAccountAnnotations map[string]string
+		// generate the service account token if the audience is configured
+		if len(p.serviceAccountTokenAudience) > 0 {
+			tr := &authenticationv1.TokenRequest{
+				Spec: authenticationv1.TokenRequestSpec{
+					Audiences: []string{p.serviceAccountTokenAudience},
+					// expiration will always be 1h for service account token
+					// generated for external credential provider
+					ExpirationSeconds: ptr.To[int64](3600),
+					BoundObjectRef: &authenticationv1.BoundObjectReference{
+						APIVersion: "v1",
+						Kind:       "Pod",
+						Name:       pod.Name,
+						UID:        pod.UID,
+					},
+				},
+			}
+
+			tr, err := p.getServiceAccountToken(pod.Namespace, serviceAccount.Name, tr)
+			if err != nil {
+				klog.Errorf("Failed to get service account token for audience %q: %v", p.serviceAccountTokenAudience, err)
+				// TODO(aramase): do we return the error here?
+				return credentialprovider.DockerConfig{}, err
+			}
+
+			serviceAccountToken = tr.Status.Token
+			// extract the required annotation keys from the service account
+			serviceAccountAnnotations = make(map[string]string, len(p.serviceAccountAnnotationKeys))
+			for _, key := range p.serviceAccountAnnotationKeys {
+				if value, ok := serviceAccount.Annotations[key]; ok {
+					serviceAccountAnnotations[key] = value
+				}
+			}
+		}
+		return p.plugin.ExecPlugin(context.Background(), image, serviceAccountToken, serviceAccountAnnotations)
 	})
 
 	if err != nil {
@@ -242,6 +309,8 @@ func (p *pluginProvider) Provide(image string) credentialprovider.DockerConfig {
 		return credentialprovider.DockerConfig{}
 	}
 
+	// TODO(aramase): disallow global cache key when running the plugin with the service account token audience set
+	// TODO(aramase): cache key generation using the sa name, namespace, uid and the annotations sent to the plugin
 	var cacheKey string
 	switch cacheKeyType := response.CacheKeyType; cacheKeyType {
 	case credentialproviderapi.ImagePluginCacheKeyType:
@@ -355,7 +424,7 @@ func (p *pluginProvider) getCachedCredentials(image string) (credentialprovider.
 // Plugin is the interface calling ExecPlugin. This is mainly for testability
 // so tests don't have to actually exec any processes.
 type Plugin interface {
-	ExecPlugin(ctx context.Context, image string) (*credentialproviderapi.CredentialProviderResponse, error)
+	ExecPlugin(ctx context.Context, image, serviceAccountToken string, serviceAccountAnnotations map[string]string) (*credentialproviderapi.CredentialProviderResponse, error)
 }
 
 // execPlugin is the implementation of the Plugin interface that execs a credential provider plugin based
@@ -377,10 +446,10 @@ type execPlugin struct {
 //
 // The plugin is expected to receive the CredentialProviderRequest API via stdin from the kubelet and
 // return CredentialProviderResponse via stdout.
-func (e *execPlugin) ExecPlugin(ctx context.Context, image string) (*credentialproviderapi.CredentialProviderResponse, error) {
+func (e *execPlugin) ExecPlugin(ctx context.Context, image, serviceAccountToken string, serviceAccountAnnotations map[string]string) (*credentialproviderapi.CredentialProviderResponse, error) {
 	klog.V(5).Infof("Getting image %s credentials from external exec plugin %s", image, e.name)
 
-	authRequest := &credentialproviderapi.CredentialProviderRequest{Image: image}
+	authRequest := &credentialproviderapi.CredentialProviderRequest{Image: image, ServiceAccountToken: serviceAccountToken, ServiceAccountAnnotations: serviceAccountAnnotations}
 	data, err := e.encodeRequest(authRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode auth request: %w", err)

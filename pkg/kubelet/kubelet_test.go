@@ -36,10 +36,13 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	noopoteltrace "go.opentelemetry.io/otel/trace/noop"
 
+	corelisters "k8s.io/client-go/listers/core/v1"
+
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	core "k8s.io/client-go/testing"
 	"k8s.io/mount-utils"
 
@@ -3166,6 +3169,21 @@ func TestNewMainKubeletStandAlone(t *testing.T) {
 	assert.Nil(t, testMainKubelet.secretManager, "secret manager should be nil if kubelet is in standalone mode")
 }
 
+type testServiceAccountLister struct {
+	serviceAccounts map[string]*v1.ServiceAccount
+}
+
+func (t testServiceAccountLister) List(selector labels.Selector) (ret []*v1.ServiceAccount, err error) {
+	for _, sa := range t.serviceAccounts {
+		ret = append(ret, sa)
+	}
+	return ret, nil
+}
+
+func (t testServiceAccountLister) ServiceAccounts(namespace string) corelisters.ServiceAccountNamespaceLister {
+	return t
+}
+
 func TestSyncPodSpans(t *testing.T) {
 	testKubelet := newTestKubelet(t, false)
 	kubelet := testKubelet.kubelet
@@ -3238,10 +3256,13 @@ func TestSyncPodSpans(t *testing.T) {
 		*kubeCfg.MemoryThrottlingFactor,
 		kubeletutil.NewPodStartupLatencyTracker(),
 		tp,
+		testServiceAccountLister{},
+		nil,
 	)
 	assert.NoError(t, err)
 
 	pod := podWithUIDNameNsSpec("12345678", "foo", "new", v1.PodSpec{
+		ServiceAccountName: "default",
 		Containers: []v1.Container{
 			{
 				Name:            "bar",

@@ -225,7 +225,7 @@ func TestDockerKeyringForGlob(t *testing.T) {
 			keyring.Add(cfg)
 		}
 
-		creds, ok := keyring.Lookup(test.targetURL + "/foo/bar")
+		creds, ok := keyring.Lookup(test.targetURL+"/foo/bar", nil, nil)
 		if !ok {
 			t.Errorf("%d: Didn't find expected URL: %s", i, test.targetURL)
 			continue
@@ -293,7 +293,7 @@ func TestKeyringMiss(t *testing.T) {
 			keyring.Add(cfg)
 		}
 
-		_, ok := keyring.Lookup(test.lookupURL + "/foo/bar")
+		_, ok := keyring.Lookup(test.lookupURL+"/foo/bar", nil, nil)
 		if ok {
 			t.Errorf("Expected not to find URL %s, but found", test.lookupURL)
 		}
@@ -321,7 +321,7 @@ func TestKeyringMissWithDockerHubCredentials(t *testing.T) {
 		keyring.Add(cfg)
 	}
 
-	val, ok := keyring.Lookup("world.mesos.org/foo/bar")
+	val, ok := keyring.Lookup("world.mesos.org/foo/bar", nil, nil)
 	if ok {
 		t.Errorf("Found unexpected credential: %+v", val)
 	}
@@ -347,7 +347,7 @@ func TestKeyringHitWithUnqualifiedDockerHub(t *testing.T) {
 		keyring.Add(cfg)
 	}
 
-	creds, ok := keyring.Lookup("google/docker-registry")
+	creds, ok := keyring.Lookup("google/docker-registry", nil, nil)
 	if !ok {
 		t.Errorf("Didn't find expected URL: %s", url)
 		return
@@ -388,7 +388,7 @@ func TestKeyringHitWithUnqualifiedLibraryDockerHub(t *testing.T) {
 		keyring.Add(cfg)
 	}
 
-	creds, ok := keyring.Lookup("jenkins")
+	creds, ok := keyring.Lookup("jenkins", nil, nil)
 	if !ok {
 		t.Errorf("Didn't find expected URL: %s", url)
 		return
@@ -429,7 +429,7 @@ func TestKeyringHitWithQualifiedDockerHub(t *testing.T) {
 		keyring.Add(cfg)
 	}
 
-	creds, ok := keyring.Lookup(url + "/google/docker-registry")
+	creds, ok := keyring.Lookup(url+"/google/docker-registry", nil, nil)
 	if !ok {
 		t.Errorf("Didn't find expected URL: %s", url)
 		return
@@ -483,15 +483,15 @@ func TestProvidersDockerKeyring(t *testing.T) {
 	if provider.Count != 0 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
-	keyring.Lookup("foo")
+	keyring.Lookup("foo", nil, nil)
 	if provider.Count != 1 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
-	keyring.Lookup("foo")
+	keyring.Lookup("foo", nil, nil)
 	if provider.Count != 2 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
-	keyring.Lookup("foo")
+	keyring.Lookup("foo", nil, nil)
 	if provider.Count != 3 {
 		t.Errorf("Unexpected number of Provide calls: %v", provider.Count)
 	}
@@ -550,7 +550,7 @@ func TestDockerKeyringLookup(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		match, ok := dk.Lookup(tt.image)
+		match, ok := dk.Lookup(tt.image, nil, nil)
 		if tt.ok != ok {
 			t.Errorf("case %d: expected ok=%t, got %t", i, tt.ok, ok)
 		}
@@ -594,7 +594,7 @@ func TestIssue3797(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		match, ok := dk.Lookup(tt.image)
+		match, ok := dk.Lookup(tt.image, nil, nil)
 		if tt.ok != ok {
 			t.Errorf("case %d: expected ok=%t, got %t", i, tt.ok, ok)
 		}

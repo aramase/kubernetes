@@ -48,7 +48,8 @@ var (
 // Implementations are expected to be thread safe.
 type ImageManager interface {
 	// EnsureImageExists ensures that image specified by `imgRef` exists.
-	EnsureImageExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, imgRef string, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig, podRuntimeHandler string, pullPolicy v1.PullPolicy) (string, string, error)
+	// TODO(aramase): refactor this to take a single ImageSpec argument.
+	EnsureImageExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, serviceAccount *v1.ServiceAccount, imgRef string, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig, podRuntimeHandler string, pullPolicy v1.PullPolicy) (string, string, error)
 
 	// TODO(ronl): consolidating image managing and deleting operation in this interface
 }

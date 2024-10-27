@@ -32,7 +32,7 @@ import (
 
 // PullImage pulls an image from the network to local storage using the supplied
 // secrets if necessary.
-func (m *kubeGenericRuntimeManager) PullImage(ctx context.Context, image kubecontainer.ImageSpec, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig) (string, error) {
+func (m *kubeGenericRuntimeManager) PullImage(ctx context.Context, image kubecontainer.ImageSpec, pullSecrets []v1.Secret, pod *v1.Pod, serviceAccount *v1.ServiceAccount, podSandboxConfig *runtimeapi.PodSandboxConfig) (string, error) {
 	img := image.Image
 	repoToPull, _, _, err := parsers.ParseImageName(img)
 	if err != nil {
@@ -46,7 +46,7 @@ func (m *kubeGenericRuntimeManager) PullImage(ctx context.Context, image kubecon
 
 	imgSpec := toRuntimeAPIImageSpec(image)
 
-	creds, withCredentials := keyring.Lookup(repoToPull)
+	creds, withCredentials := keyring.Lookup(repoToPull, pod, serviceAccount)
 	if !withCredentials {
 		klog.V(3).InfoS("Pulling image without credentials", "image", img)
 
