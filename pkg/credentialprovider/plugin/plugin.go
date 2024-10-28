@@ -24,13 +24,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/sync/singleflight"
-
-	"k8s.io/utils/ptr"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	v1 "k8s.io/api/core/v1"
@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -53,6 +54,7 @@ import (
 	kubeletconfigv1alpha1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1alpha1"
 	kubeletconfigv1beta1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1beta1"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -253,6 +255,7 @@ func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.S
 		return cachedConfig
 	}
 
+	var serviceAccountAnnotations map[string]string
 	// ExecPlugin is wrapped in single flight to exec plugin once for concurrent same image request.
 	// The caveat here is we don't know cacheKeyType yet, so if cacheKeyType is registry/global and credentials saved in cache
 	// on per registry/global basis then exec will be called for all requests if requests are made concurrently.
@@ -261,7 +264,6 @@ func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.S
 	// foo.bar.registry/image2
 	res, err, _ := p.group.Do(image, func() (interface{}, error) {
 		var serviceAccountToken string
-		var serviceAccountAnnotations map[string]string
 		// generate the service account token if the audience is configured
 		if len(p.serviceAccountTokenAudience) > 0 {
 			tr := &authenticationv1.TokenRequest{
@@ -309,8 +311,6 @@ func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.S
 		return credentialprovider.DockerConfig{}
 	}
 
-	// TODO(aramase): disallow global cache key when running the plugin with the service account token audience set
-	// TODO(aramase): cache key generation using the sa name, namespace, uid and the annotations sent to the plugin
 	var cacheKey string
 	switch cacheKeyType := response.CacheKeyType; cacheKeyType {
 	case credentialproviderapi.ImagePluginCacheKeyType:
@@ -319,10 +319,23 @@ func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.S
 		registry := parseRegistry(image)
 		cacheKey = registry
 	case credentialproviderapi.GlobalPluginCacheKeyType:
+		if len(p.serviceAccountTokenAudience) > 0 {
+			klog.Error("Global cache key is not allowed when service account token audience is set")
+			return credentialprovider.DockerConfig{}
+		}
 		cacheKey = globalCacheKey
 	default:
 		klog.Errorf("credential provider plugin did not return a valid cacheKeyType: %q", cacheKeyType)
 		return credentialprovider.DockerConfig{}
+	}
+
+	if len(p.serviceAccountTokenAudience) > 0 {
+		cacheKeyBytes, err := generateCacheKey(cacheKey, serviceAccount.Name, serviceAccount.Namespace, serviceAccount.UID, serviceAccountAnnotations)
+		if err != nil {
+			klog.Errorf("Error generating cache key: %v", err)
+			return credentialprovider.DockerConfig{}
+		}
+		cacheKey = string(cacheKeyBytes)
 	}
 
 	dockerConfig := make(credentialprovider.DockerConfig, len(response.Auth))
@@ -360,6 +373,42 @@ func (p *pluginProvider) Provide(image string, pod *v1.Pod, serviceAccount *v1.S
 	}
 
 	return dockerConfig
+}
+
+func generateCacheKey(baseKey string, name, namespace string, uid types.UID, annotations map[string]string) ([]byte, error) {
+	b := cryptobyte.NewBuilder(nil)
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(baseKey))
+	})
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(name))
+	})
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(namespace))
+	})
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(uid))
+	})
+
+	// add the length of annotations to the cache key
+	b.AddUint32(uint32(len(annotations)))
+
+	// Sort the annotations by key to ensure the cache key is deterministic
+	keys := make([]string, 0, len(annotations))
+	for k := range annotations {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes([]byte(k))
+		})
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes([]byte(annotations[k]))
+		})
+	}
+
+	return b.Bytes()
 }
 
 // Enabled always returns true since registration of the plugin via kubelet implies it should be enabled.
