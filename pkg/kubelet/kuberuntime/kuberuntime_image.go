@@ -39,6 +39,8 @@ func (m *kubeGenericRuntimeManager) PullImage(ctx context.Context, image kubecon
 		return "", err
 	}
 
+	// TODO(aramase): make a dynamic docker keyring here, so the pod name, namespace and uid can be passed
+	// to the credential provider.
 	keyring, err := credentialprovidersecrets.MakeDockerKeyring(pullSecrets, m.keyring)
 	if err != nil {
 		return "", err

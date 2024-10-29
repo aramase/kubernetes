@@ -21,6 +21,7 @@ import (
 	"sort"
 	"sync"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -68,4 +69,25 @@ func NewDockerKeyring() DockerKeyring {
 	}
 
 	return keyring
+}
+
+type DynamicDockerKeyring struct {
+	baseKeyring    DockerKeyring
+	pod            *v1.Pod
+	serviceAccount *v1.ServiceAccount
+}
+
+// NewDynamicDockerKeyringWithContext creates a new keyring with dynamic pod and service account context.
+func NewDynamicDockerKeyringWithContext(baseKeyring DockerKeyring, pod *v1.Pod, serviceAccount *v1.ServiceAccount) *DynamicDockerKeyring {
+	return &DynamicDockerKeyring{
+		baseKeyring:    baseKeyring,
+		pod:            pod,
+		serviceAccount: serviceAccount,
+	}
+}
+
+// Lookup overrides the base keyring to incorporate the request-specific context.
+func (dk *DynamicDockerKeyring) Lookup(image string) ([]AuthConfig, bool) {
+	// Customize Lookup using pod/serviceAccount context if needed, or fall back to baseKeyring
+	return dk.baseKeyring.Lookup(image)
 }

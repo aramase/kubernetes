@@ -30,6 +30,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	v1 "k8s.io/api/core/v1"
+
+	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -75,7 +78,10 @@ func init() {
 
 // RegisterCredentialProviderPlugins is called from kubelet to register external credential provider
 // plugins according to the CredentialProviderConfig config file.
-func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) error {
+func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string,
+	getServiceAccountToken func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error),
+	getServiceAccount func(namespace, name string) (*v1.ServiceAccount, error),
+) error {
 	if _, err := os.Stat(pluginBinDir); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("plugin binary directory %s did not exist", pluginBinDir)
@@ -109,7 +115,7 @@ func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) er
 			return fmt.Errorf("error inspecting binary executable %s: %w", pluginBin, err)
 		}
 
-		plugin, err := newPluginProvider(pluginBinDir, provider)
+		plugin, err := newPluginProvider(pluginBinDir, provider, getServiceAccountToken, getServiceAccount)
 		if err != nil {
 			return fmt.Errorf("error initializing plugin provider %s: %w", provider.Name, err)
 		}
@@ -121,7 +127,10 @@ func RegisterCredentialProviderPlugins(pluginConfigFile, pluginBinDir string) er
 }
 
 // newPluginProvider returns a new pluginProvider based on the credential provider config.
-func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialProvider) (*pluginProvider, error) {
+func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialProvider,
+	getServiceAccountToken func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error),
+	getServiceAccount func(namespace, name string) (*v1.ServiceAccount, error),
+) (*pluginProvider, error) {
 	mediaType := "application/json"
 	info, ok := runtime.SerializerInfoForMediaType(codecs.SupportedMediaTypes(), mediaType)
 	if !ok {
@@ -136,11 +145,13 @@ func newPluginProvider(pluginBinDir string, provider kubeletconfig.CredentialPro
 	clock := clock.RealClock{}
 
 	return &pluginProvider{
-		clock:                clock,
-		matchImages:          provider.MatchImages,
-		cache:                cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
-		defaultCacheDuration: provider.DefaultCacheDuration.Duration,
-		lastCachePurge:       clock.Now(),
+		clock:                  clock,
+		matchImages:            provider.MatchImages,
+		cache:                  cache.NewExpirationStore(cacheKeyFunc, &cacheExpirationPolicy{clock: clock}),
+		defaultCacheDuration:   provider.DefaultCacheDuration.Duration,
+		lastCachePurge:         clock.Now(),
+		getServiceAccountToken: getServiceAccountToken,
+		getServiceAccount:      getServiceAccount,
 		plugin: &execPlugin{
 			name:         provider.Name,
 			apiVersion:   provider.APIVersion,
@@ -178,6 +189,10 @@ type pluginProvider struct {
 
 	// lastCachePurge is the last time cache is cleaned for expired entries.
 	lastCachePurge time.Time
+
+	getServiceAccountToken func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error)
+
+	getServiceAccount func(namespace, name string) (*v1.ServiceAccount, error)
 }
 
 // cacheEntry is the cache object that will be stored in cache.Store.
