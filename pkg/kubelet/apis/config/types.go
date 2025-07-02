@@ -871,6 +871,18 @@ type ImagePullCredentials struct {
 	// If true, it is mutually exclusive with the `kubernetesSecrets` field.
 	// +optional
 	NodePodsAccessible bool
+
+	// ServiceAccountCredentials tracks service account token-based credentials
+	// that were used to pull the image. These credentials are accessible by any pod
+	// using the same service account.
+	// +optional
+	ServiceAccountCredentials []ServiceAccountCredential
+
+	// PodServiceAccountCredentials tracks pod-specific service account token credentials
+	// that were used to pull the image. These credentials are only accessible by the
+	// specific pod that was used to pull the image.
+	// +optional
+	PodServiceAccountCredentials []PodServiceAccountCredential
 }
 
 // ImagePullSecret is a representation of a Kubernetes secret object coordinates along
@@ -883,6 +895,42 @@ type ImagePullSecret struct {
 	// CredentialHash is a SHA-256 retrieved by hashing the image pull credentials
 	// content of the secret specified by the UID/Namespace/Name coordinates.
 	CredentialHash string
+}
+
+// ServiceAccountCredential represents service account token-based credentials used to pull an image.
+// These credentials can be used by any pod using the same service account.
+type ServiceAccountCredential struct {
+	// ServiceAccountName is the name of the service account
+	ServiceAccountName string
+	// ServiceAccountNamespace is the namespace of the service account
+	ServiceAccountNamespace string
+	// ServiceAccountUID is the UID of the service account
+	ServiceAccountUID string
+	// TokenHash is a SHA-256 hash of the service account token used for credential generation
+	TokenHash string
+	// ExpiresAt is the time when these credentials expire and should no longer be considered valid
+	ExpiresAt metav1.Time
+}
+
+// PodServiceAccountCredential represents pod-specific service account token credentials used to pull an image.
+// These credentials can only be used by the specific pod that was used to pull the image.
+type PodServiceAccountCredential struct {
+	// ServiceAccountName is the name of the service account
+	ServiceAccountName string
+	// ServiceAccountNamespace is the namespace of the service account
+	ServiceAccountNamespace string
+	// ServiceAccountUID is the UID of the service account
+	ServiceAccountUID string
+	// PodName is the name of the pod
+	PodName string
+	// PodNamespace is the namespace of the pod
+	PodNamespace string
+	// PodUID is the UID of the pod
+	PodUID string
+	// TokenHash is a SHA-256 hash of the pod-specific service account token used for credential generation
+	TokenHash string
+	// ExpiresAt is the time when these credentials expire and should no longer be considered valid
+	ExpiresAt metav1.Time
 }
 
 // UserNamespaces contains User Namespace configurations.

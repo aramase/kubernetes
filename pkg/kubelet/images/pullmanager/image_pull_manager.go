@@ -180,6 +180,14 @@ func (f *PullManager) decrementImagePullIntent(image string) {
 }
 
 func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []kubeletconfiginternal.ImagePullSecret) bool {
+	// Convert legacy call to new method
+	credentials := &kubeletconfiginternal.ImagePullCredentials{
+		KubernetesSecrets: podSecrets,
+	}
+	return f.MustAttemptImagePullWithCredentials(image, imageRef, credentials)
+}
+
+func (f *PullManager) MustAttemptImagePullWithCredentials(image, imageRef string, credentials *kubeletconfiginternal.ImagePullCredentials) bool {
 	if len(imageRef) == 0 {
 		return true
 	}
@@ -253,13 +261,40 @@ func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []
 		return false
 	}
 
-	if len(cachedCreds.KubernetesSecrets) == 0 {
+	// Check if any of the provided credentials match the cached ones
+	return !f.credentialsMatch(credentials, &cachedCreds, image, imageRef)
+}
+
+// credentialsMatch checks if any of the provided credentials match the cached credentials
+func (f *PullManager) credentialsMatch(providedCreds, cachedCreds *kubeletconfiginternal.ImagePullCredentials, image, imageRef string) bool {
+	currentTime := time.Now()
+
+	// Check Kubernetes secrets
+	if f.kubernetesSecretsMatch(providedCreds.KubernetesSecrets, cachedCreds.KubernetesSecrets, image, imageRef) {
 		return true
 	}
 
-	for _, podSecret := range podSecrets {
-		for _, cachedSecret := range cachedCreds.KubernetesSecrets {
+	// Check service account credentials
+	if f.serviceAccountCredentialsMatch(providedCreds.ServiceAccountCredentials, cachedCreds.ServiceAccountCredentials, currentTime, image, imageRef) {
+		return true
+	}
 
+	// Check pod-level service account credentials
+	if f.podServiceAccountCredentialsMatch(providedCreds.PodServiceAccountCredentials, cachedCreds.PodServiceAccountCredentials, currentTime, image, imageRef) {
+		return true
+	}
+
+	return false
+}
+
+// kubernetesSecretsMatch checks if any provided Kubernetes secrets match cached ones
+func (f *PullManager) kubernetesSecretsMatch(providedSecrets, cachedSecrets []kubeletconfiginternal.ImagePullSecret, image, imageRef string) bool {
+	if len(cachedSecrets) == 0 {
+		return false
+	}
+
+	for _, podSecret := range providedSecrets {
+		for _, cachedSecret := range cachedSecrets {
 			// we need to check hash len in case hashing failed while storing the record in the keyring
 			hashesMatch := len(cachedSecret.CredentialHash) > 0 && podSecret.CredentialHash == cachedSecret.CredentialHash
 			secretCoordinatesMatch := podSecret.UID == cachedSecret.UID &&
@@ -267,7 +302,7 @@ func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []
 				podSecret.Name == cachedSecret.Name
 
 			if hashesMatch {
-				if !secretCoordinatesMatch && len(cachedCreds.KubernetesSecrets) < writeRecordWhileMatchingLimit {
+				if !secretCoordinatesMatch && len(cachedSecrets) < writeRecordWhileMatchingLimit {
 					// While we're only matching at this point, we want to ensure this secret is considered valid in the future
 					// and so we make an additional write to the cache.
 					// writePulledRecord() is a noop in case the secret with the updated hash already appears in the cache.
@@ -275,24 +310,97 @@ func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []
 						klog.ErrorS(err, "failed to write an image pulled record", "image", image, "imageRef", imageRef)
 					}
 				}
-				return false
+				return true
 			}
 
 			if secretCoordinatesMatch {
-				if !hashesMatch && len(cachedCreds.KubernetesSecrets) < writeRecordWhileMatchingLimit {
+				if !hashesMatch && len(cachedSecrets) < writeRecordWhileMatchingLimit {
 					// While we're only matching at this point, we want to ensure the updated credentials are considered valid in the future
 					// and so we make an additional write to the cache.
 					// writePulledRecord() is a noop in case the hash got updated in the meantime.
 					if err := f.writePulledRecordIfChanged(image, imageRef, &kubeletconfiginternal.ImagePullCredentials{KubernetesSecrets: []kubeletconfiginternal.ImagePullSecret{podSecret}}); err != nil {
 						klog.ErrorS(err, "failed to write an image pulled record", "image", image, "imageRef", imageRef)
 					}
-					return false
+					return true
 				}
 			}
 		}
 	}
 
-	return true
+	return false
+}
+
+// serviceAccountCredentialsMatch checks if any provided service account credentials match cached ones
+func (f *PullManager) serviceAccountCredentialsMatch(providedCreds, cachedCreds []kubeletconfiginternal.ServiceAccountCredential, currentTime time.Time, image, imageRef string) bool {
+	if len(cachedCreds) == 0 {
+		return false
+	}
+
+	for _, providedCred := range providedCreds {
+		for _, cachedCred := range cachedCreds {
+			// Check if the cached credential has expired
+			if !cachedCred.ExpiresAt.IsZero() && currentTime.After(cachedCred.ExpiresAt.Time) {
+				continue // Skip expired credentials
+			}
+
+			// Match service account coordinates and token hash
+			if providedCred.ServiceAccountName == cachedCred.ServiceAccountName &&
+				providedCred.ServiceAccountNamespace == cachedCred.ServiceAccountNamespace &&
+				providedCred.ServiceAccountUID == cachedCred.ServiceAccountUID &&
+				providedCred.TokenHash == cachedCred.TokenHash {
+
+				// Update cache with newer expiration if needed
+				if !providedCred.ExpiresAt.IsZero() && (cachedCred.ExpiresAt.IsZero() || providedCred.ExpiresAt.Time.After(cachedCred.ExpiresAt.Time)) {
+					if len(cachedCreds) < writeRecordWhileMatchingLimit {
+						if err := f.writePulledRecordIfChanged(image, imageRef, &kubeletconfiginternal.ImagePullCredentials{ServiceAccountCredentials: []kubeletconfiginternal.ServiceAccountCredential{providedCred}}); err != nil {
+							klog.ErrorS(err, "failed to write an image pulled record with updated service account credential", "image", image, "imageRef", imageRef)
+						}
+					}
+				}
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// podServiceAccountCredentialsMatch checks if any provided pod-level service account credentials match cached ones
+func (f *PullManager) podServiceAccountCredentialsMatch(providedCreds, cachedCreds []kubeletconfiginternal.PodServiceAccountCredential, currentTime time.Time, image, imageRef string) bool {
+	if len(cachedCreds) == 0 {
+		return false
+	}
+
+	for _, providedCred := range providedCreds {
+		for _, cachedCred := range cachedCreds {
+			// Check if the cached credential has expired
+			if !cachedCred.ExpiresAt.IsZero() && currentTime.After(cachedCred.ExpiresAt.Time) {
+				continue // Skip expired credentials
+			}
+
+			// Match pod and service account coordinates and token hash
+			if providedCred.PodName == cachedCred.PodName &&
+				providedCred.PodNamespace == cachedCred.PodNamespace &&
+				providedCred.PodUID == cachedCred.PodUID &&
+				providedCred.ServiceAccountName == cachedCred.ServiceAccountName &&
+				providedCred.ServiceAccountNamespace == cachedCred.ServiceAccountNamespace &&
+				providedCred.ServiceAccountUID == cachedCred.ServiceAccountUID &&
+				providedCred.TokenHash == cachedCred.TokenHash {
+
+				// Update cache with newer expiration if needed
+				if !providedCred.ExpiresAt.IsZero() && (cachedCred.ExpiresAt.IsZero() || providedCred.ExpiresAt.Time.After(cachedCred.ExpiresAt.Time)) {
+					if len(cachedCreds) < writeRecordWhileMatchingLimit {
+						if err := f.writePulledRecordIfChanged(image, imageRef, &kubeletconfiginternal.ImagePullCredentials{PodServiceAccountCredentials: []kubeletconfiginternal.PodServiceAccountCredential{providedCred}}); err != nil {
+							klog.ErrorS(err, "failed to write an image pulled record with updated pod service account credential", "image", image, "imageRef", imageRef)
+						}
+					}
+				}
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (f *PullManager) PruneUnknownRecords(imageList []string, until time.Time) {
@@ -429,9 +537,9 @@ func pulledRecordMergeNewCreds(orig *kubeletconfiginternal.ImagePulledRecord, im
 		return orig, false
 	}
 
-	if !newCreds.NodePodsAccessible && len(newCreds.KubernetesSecrets) == 0 {
-		// we don't have any secret credentials or node-wide access to record
-		// TODO(stlaz,aramase): add in a serviceaccount dimension check
+	if !newCreds.NodePodsAccessible && len(newCreds.KubernetesSecrets) == 0 &&
+		len(newCreds.ServiceAccountCredentials) == 0 && len(newCreds.PodServiceAccountCredentials) == 0 {
+		// we don't have any secret credentials, service account credentials, or node-wide access to record
 		return orig, false
 	}
 	selectedCreds, found := orig.CredentialMapping[imageNoTagDigest]
@@ -452,6 +560,8 @@ func pulledRecordMergeNewCreds(orig *kubeletconfiginternal.ImagePulledRecord, im
 	if newCreds.NodePodsAccessible {
 		selectedCreds.NodePodsAccessible = true
 		selectedCreds.KubernetesSecrets = nil
+		selectedCreds.ServiceAccountCredentials = nil
+		selectedCreds.PodServiceAccountCredentials = nil
 
 		ret := orig.DeepCopy()
 		ret.CredentialMapping[imageNoTagDigest] = selectedCreds
@@ -460,8 +570,14 @@ func pulledRecordMergeNewCreds(orig *kubeletconfiginternal.ImagePulledRecord, im
 	}
 
 	var secretsChanged bool
+	var serviceAccountCredsChanged bool
+	var podServiceAccountCredsChanged bool
+
 	selectedCreds.KubernetesSecrets, secretsChanged = mergePullSecrets(selectedCreds.KubernetesSecrets, newCreds.KubernetesSecrets)
-	if !secretsChanged {
+	selectedCreds.ServiceAccountCredentials, serviceAccountCredsChanged = mergeServiceAccountCredentials(selectedCreds.ServiceAccountCredentials, newCreds.ServiceAccountCredentials)
+	selectedCreds.PodServiceAccountCredentials, podServiceAccountCredsChanged = mergePodServiceAccountCredentials(selectedCreds.PodServiceAccountCredentials, newCreds.PodServiceAccountCredentials)
+
+	if !secretsChanged && !serviceAccountCredsChanged && !podServiceAccountCredsChanged {
 		return orig, false
 	}
 
@@ -515,6 +631,184 @@ func mergePullSecrets(orig, new []kubeletconfiginternal.ImagePullSecret) ([]kube
 	slices.SortFunc(ret, imagePullSecretLess)
 
 	return ret, true
+}
+
+// mergeServiceAccountCredentials merges two slices of ServiceAccountCredential object into one while
+// keeping the objects unique per service account coordinates and token hash.
+//
+// In case an object from the `new` slice has the same service account coordinates and token hash
+// as an object from `orig`, the result will use the ExpiresAt value from the newer one.
+//
+// The returned slice is sorted by ServiceAccountNamespace, ServiceAccountName, ServiceAccountUID, and TokenHash (in this order). Also
+// returns an indicator whether the set of input credentials changed.
+func mergeServiceAccountCredentials(orig, new []kubeletconfiginternal.ServiceAccountCredential) ([]kubeletconfiginternal.ServiceAccountCredential, bool) {
+	type serviceAccountCoordinates struct {
+		ServiceAccountUID       string
+		ServiceAccountNamespace string
+		ServiceAccountName      string
+		TokenHash               string
+	}
+
+	credMap := make(map[serviceAccountCoordinates]metav1.Time)
+	for _, cred := range orig {
+		credMap[serviceAccountCoordinates{
+			ServiceAccountUID:       cred.ServiceAccountUID,
+			ServiceAccountNamespace: cred.ServiceAccountNamespace,
+			ServiceAccountName:      cred.ServiceAccountName,
+			TokenHash:               cred.TokenHash,
+		}] = cred.ExpiresAt
+	}
+
+	changed := false
+	for _, cred := range new {
+		key := serviceAccountCoordinates{
+			ServiceAccountUID:       cred.ServiceAccountUID,
+			ServiceAccountNamespace: cred.ServiceAccountNamespace,
+			ServiceAccountName:      cred.ServiceAccountName,
+			TokenHash:               cred.TokenHash,
+		}
+		if existingExpiry, ok := credMap[key]; !ok || (!cred.ExpiresAt.IsZero() && (existingExpiry.IsZero() || cred.ExpiresAt.Time.After(existingExpiry.Time))) {
+			changed = true
+			credMap[key] = cred.ExpiresAt
+		}
+	}
+	if !changed {
+		return orig, false
+	}
+
+	ret := make([]kubeletconfiginternal.ServiceAccountCredential, 0, len(credMap))
+	for coords, expiresAt := range credMap {
+		ret = append(ret, kubeletconfiginternal.ServiceAccountCredential{
+			ServiceAccountUID:       coords.ServiceAccountUID,
+			ServiceAccountNamespace: coords.ServiceAccountNamespace,
+			ServiceAccountName:      coords.ServiceAccountName,
+			TokenHash:               coords.TokenHash,
+			ExpiresAt:               expiresAt,
+		})
+	}
+	// we don't need to use the stable version because service account coordinates used for ordering are unique in the set
+	slices.SortFunc(ret, serviceAccountCredentialLess)
+
+	return ret, true
+}
+
+// mergePodServiceAccountCredentials merges two slices of PodServiceAccountCredential object into one while
+// keeping the objects unique per pod and service account coordinates and token hash.
+//
+// In case an object from the `new` slice has the same coordinates and token hash
+// as an object from `orig`, the result will use the ExpiresAt value from the newer one.
+//
+// The returned slice is sorted by pod and service account coordinates. Also
+// returns an indicator whether the set of input credentials changed.
+func mergePodServiceAccountCredentials(orig, new []kubeletconfiginternal.PodServiceAccountCredential) ([]kubeletconfiginternal.PodServiceAccountCredential, bool) {
+	type podServiceAccountCoordinates struct {
+		PodUID                  string
+		PodNamespace            string
+		PodName                 string
+		ServiceAccountUID       string
+		ServiceAccountNamespace string
+		ServiceAccountName      string
+		TokenHash               string
+	}
+
+	credMap := make(map[podServiceAccountCoordinates]metav1.Time)
+	for _, cred := range orig {
+		credMap[podServiceAccountCoordinates{
+			PodUID:                  cred.PodUID,
+			PodNamespace:            cred.PodNamespace,
+			PodName:                 cred.PodName,
+			ServiceAccountUID:       cred.ServiceAccountUID,
+			ServiceAccountNamespace: cred.ServiceAccountNamespace,
+			ServiceAccountName:      cred.ServiceAccountName,
+			TokenHash:               cred.TokenHash,
+		}] = cred.ExpiresAt
+	}
+
+	changed := false
+	for _, cred := range new {
+		key := podServiceAccountCoordinates{
+			PodUID:                  cred.PodUID,
+			PodNamespace:            cred.PodNamespace,
+			PodName:                 cred.PodName,
+			ServiceAccountUID:       cred.ServiceAccountUID,
+			ServiceAccountNamespace: cred.ServiceAccountNamespace,
+			ServiceAccountName:      cred.ServiceAccountName,
+			TokenHash:               cred.TokenHash,
+		}
+		if existingExpiry, ok := credMap[key]; !ok || (!cred.ExpiresAt.IsZero() && (existingExpiry.IsZero() || cred.ExpiresAt.Time.After(existingExpiry.Time))) {
+			changed = true
+			credMap[key] = cred.ExpiresAt
+		}
+	}
+	if !changed {
+		return orig, false
+	}
+
+	ret := make([]kubeletconfiginternal.PodServiceAccountCredential, 0, len(credMap))
+	for coords, expiresAt := range credMap {
+		ret = append(ret, kubeletconfiginternal.PodServiceAccountCredential{
+			PodUID:                  coords.PodUID,
+			PodNamespace:            coords.PodNamespace,
+			PodName:                 coords.PodName,
+			ServiceAccountUID:       coords.ServiceAccountUID,
+			ServiceAccountNamespace: coords.ServiceAccountNamespace,
+			ServiceAccountName:      coords.ServiceAccountName,
+			TokenHash:               coords.TokenHash,
+			ExpiresAt:               expiresAt,
+		})
+	}
+	// we don't need to use the stable version because coordinates used for ordering are unique in the set
+	slices.SortFunc(ret, podServiceAccountCredentialLess)
+
+	return ret, true
+}
+
+// serviceAccountCredentialLess is a helper function to define ordering in a slice of
+// ServiceAccountCredential objects.
+func serviceAccountCredentialLess(a, b kubeletconfiginternal.ServiceAccountCredential) int {
+	if cmp := strings.Compare(a.ServiceAccountNamespace, b.ServiceAccountNamespace); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.ServiceAccountName, b.ServiceAccountName); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.ServiceAccountUID, b.ServiceAccountUID); cmp != 0 {
+		return cmp
+	}
+
+	return strings.Compare(a.TokenHash, b.TokenHash)
+}
+
+// podServiceAccountCredentialLess is a helper function to define ordering in a slice of
+// PodServiceAccountCredential objects.
+func podServiceAccountCredentialLess(a, b kubeletconfiginternal.PodServiceAccountCredential) int {
+	if cmp := strings.Compare(a.PodNamespace, b.PodNamespace); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.PodName, b.PodName); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.PodUID, b.PodUID); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.ServiceAccountNamespace, b.ServiceAccountNamespace); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.ServiceAccountName, b.ServiceAccountName); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := strings.Compare(a.ServiceAccountUID, b.ServiceAccountUID); cmp != 0 {
+		return cmp
+	}
+
+	return strings.Compare(a.TokenHash, b.TokenHash)
 }
 
 // imagePullSecretLess is a helper function to define ordering in a slice of

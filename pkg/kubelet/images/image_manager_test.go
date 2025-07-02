@@ -540,6 +540,26 @@ func (m *mockImagePullManager) MustAttemptImagePull(image, _ string, podSecrets 
 	return true
 }
 
+func (m *mockImagePullManager) MustAttemptImagePullWithCredentials(image, _ string, credentials *kubeletconfiginternal.ImagePullCredentials) bool {
+	if m.allowAll == true {
+		return false
+	}
+
+	cachedSecrets, ok := m.imageAllowlist[image]
+	if !ok {
+		return true
+	}
+
+	// cut off all the hashes and only determine the match based on the secret coords to simplify testing
+	for _, s := range credentials.KubernetesSecrets {
+		if cachedSecrets.Has(kubeletconfiginternal.ImagePullSecret{Namespace: s.Namespace, Name: s.Name, UID: s.UID}) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func pullerTestEnv(
 	t *testing.T,
 	c pullerTestCase,
@@ -959,5 +979,179 @@ func makeDockercfgSecretForRepo(sMeta metav1.ObjectMeta, repo string) v1.Secret 
 		Data: map[string][]byte{
 			v1.DockerConfigJsonKey: []byte(`{"auths": {"` + repo + `": {"auth": "dXNlcjpwYXNzd29yZA=="}}}`),
 		},
+	}
+}
+
+func TestTrackedToImagePullCreds(t *testing.T) {
+	tests := []struct {
+		name         string
+		trackedCreds *credentialprovider.TrackedAuthConfig
+		expected     *kubeletconfiginternal.ImagePullCredentials
+	}{
+		{
+			name:         "nil tracked credentials",
+			trackedCreds: nil,
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				NodePodsAccessible: true,
+			},
+		},
+		{
+			name: "tracked credentials with nil source",
+			trackedCreds: &credentialprovider.TrackedAuthConfig{
+				AuthConfig: credentialprovider.AuthConfig{
+					Username: "user",
+					Password: "pass",
+				},
+				Source: nil,
+			},
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				NodePodsAccessible: true,
+			},
+		},
+		{
+			name: "plugin credentials without service account (static pod scenario)",
+			trackedCreds: &credentialprovider.TrackedAuthConfig{
+				AuthConfig: credentialprovider.AuthConfig{
+					Username: "plugin-user",
+					Password: "plugin-pass",
+				},
+				Source: &credentialprovider.CredentialSource{
+					// No ServiceAccountToken or Secret - represents plugin-provided
+					// credentials for static pods or infrastructure components
+				},
+				AuthConfigHash: "abc123",
+			},
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				NodePodsAccessible: true,
+			},
+		},
+		{
+			name: "service account token credentials - service account cache type",
+			trackedCreds: &credentialprovider.TrackedAuthConfig{
+				AuthConfig: credentialprovider.AuthConfig{
+					Username: "token-user",
+					Password: "token-pass",
+				},
+				Source: &credentialprovider.CredentialSource{
+					ServiceAccountToken: &credentialprovider.ServiceAccountTokenSource{
+						ServiceAccountName:      "test-sa",
+						ServiceAccountNamespace: "test-ns",
+						ServiceAccountUID:       "sa-uid-123",
+						PodName:                 "test-pod",
+						PodNamespace:            "test-ns",
+						PodUID:                  "pod-uid-456",
+						CacheType:               "ServiceAccount",
+					},
+				},
+				AuthConfigHash: "def456",
+			},
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				ServiceAccountCredentials: []kubeletconfiginternal.ServiceAccountCredential{
+					{
+						ServiceAccountName:      "test-sa",
+						ServiceAccountNamespace: "test-ns",
+						ServiceAccountUID:       "sa-uid-123",
+						TokenHash:               "def456",
+						ExpiresAt:               metav1.NewTime(time.Now().Add(24 * time.Hour)),
+					},
+				},
+			},
+		},
+		{
+			name: "service account token credentials - pod cache type",
+			trackedCreds: &credentialprovider.TrackedAuthConfig{
+				AuthConfig: credentialprovider.AuthConfig{
+					Username: "token-user",
+					Password: "token-pass",
+				},
+				Source: &credentialprovider.CredentialSource{
+					ServiceAccountToken: &credentialprovider.ServiceAccountTokenSource{
+						ServiceAccountName:      "test-sa",
+						ServiceAccountNamespace: "test-ns",
+						ServiceAccountUID:       "sa-uid-123",
+						PodName:                 "test-pod",
+						PodNamespace:            "test-ns",
+						PodUID:                  "pod-uid-456",
+						CacheType:               "Pod",
+					},
+				},
+				AuthConfigHash: "ghi789",
+			},
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				PodServiceAccountCredentials: []kubeletconfiginternal.PodServiceAccountCredential{
+					{
+						ServiceAccountName:      "test-sa",
+						ServiceAccountNamespace: "test-ns",
+						ServiceAccountUID:       "sa-uid-123",
+						PodName:                 "test-pod",
+						PodNamespace:            "test-ns",
+						PodUID:                  "pod-uid-456",
+						TokenHash:               "ghi789",
+						ExpiresAt:               metav1.NewTime(time.Now().Add(24 * time.Hour)),
+					},
+				},
+			},
+		},
+		{
+			name: "traditional secret-based credentials",
+			trackedCreds: &credentialprovider.TrackedAuthConfig{
+				AuthConfig: credentialprovider.AuthConfig{
+					Username: "secret-user",
+					Password: "secret-pass",
+				},
+				Source: &credentialprovider.CredentialSource{
+					Secret: credentialprovider.SecretCoordinates{
+						Name:      "test-secret",
+						Namespace: "test-ns",
+						UID:       "secret-uid-789",
+					},
+				},
+				AuthConfigHash: "jkl012",
+			},
+			expected: &kubeletconfiginternal.ImagePullCredentials{
+				KubernetesSecrets: []kubeletconfiginternal.ImagePullSecret{
+					{
+						UID:            "secret-uid-789",
+						Name:           "test-secret",
+						Namespace:      "test-ns",
+						CredentialHash: "jkl012",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := trackedToImagePullCreds(tt.trackedCreds)
+
+			// For time-sensitive comparisons, we need to ignore the exact time value
+			// and only check if it's reasonably close to expected
+			opts := []cmp.Option{
+				cmpopts.IgnoreFields(kubeletconfiginternal.ServiceAccountCredential{}, "ExpiresAt"),
+				cmpopts.IgnoreFields(kubeletconfiginternal.PodServiceAccountCredential{}, "ExpiresAt"),
+			}
+
+			if diff := cmp.Diff(tt.expected, result, opts...); diff != "" {
+				t.Errorf("trackedToImagePullCreds() mismatch (-want +got):\n%s", diff)
+			}
+
+			// Verify that ExpiresAt is set for service account credentials
+			if tt.trackedCreds != nil && tt.trackedCreds.Source != nil && tt.trackedCreds.Source.ServiceAccountToken != nil {
+				now := time.Now()
+				if len(result.ServiceAccountCredentials) > 0 {
+					expiresAt := result.ServiceAccountCredentials[0].ExpiresAt.Time
+					if expiresAt.Before(now) || expiresAt.After(now.Add(25*time.Hour)) {
+						t.Errorf("Expected ExpiresAt to be between now and 25 hours from now, got %v", expiresAt)
+					}
+				}
+				if len(result.PodServiceAccountCredentials) > 0 {
+					expiresAt := result.PodServiceAccountCredentials[0].ExpiresAt.Time
+					if expiresAt.Before(now) || expiresAt.After(now.Add(25*time.Hour)) {
+						t.Errorf("Expected ExpiresAt to be between now and 25 hours from now, got %v", expiresAt)
+					}
+				}
+			}
+		})
 	}
 }

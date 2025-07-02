@@ -24,6 +24,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/record"
@@ -32,6 +33,7 @@ import (
 
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	crierrors "k8s.io/cri-api/pkg/errors"
+	credentialproviderapi "k8s.io/kubelet/pkg/apis/credentialprovider"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 	credentialproviderplugin "k8s.io/kubernetes/pkg/credentialprovider/plugin"
 	credentialprovidersecrets "k8s.io/kubernetes/pkg/credentialprovider/secrets"
@@ -213,21 +215,53 @@ func (m *imageManager) EnsureImageExists(ctx context.Context, objRef *v1.ObjectR
 			return imageRef, msg, nil
 		}
 
-		var imagePullSecrets []kubeletconfiginternal.ImagePullSecret
+		var imagePullCredentials kubeletconfiginternal.ImagePullCredentials
 		for _, s := range pullCredentials {
 			if s.Source == nil {
 				// we're only interested in creds that are not node accessible
 				continue
 			}
-			imagePullSecrets = append(imagePullSecrets, kubeletconfiginternal.ImagePullSecret{
-				UID:            string(s.Source.Secret.UID),
-				Name:           s.Source.Secret.Name,
-				Namespace:      s.Source.Secret.Namespace,
-				CredentialHash: s.AuthConfigHash,
-			})
+
+			if s.Source.ServiceAccountToken != nil {
+				// Handle service account token-based credentials (KEP-4412)
+				saToken := s.Source.ServiceAccountToken
+				// TODO: We need to get the actual cache expiration time from the plugin cache
+				// For now, we'll use a far future time as a placeholder
+				farFuture := metav1.NewTime(time.Now().Add(24 * time.Hour))
+
+				switch saToken.CacheType {
+				case string(credentialproviderapi.ServiceAccountServiceAccountTokenCacheType):
+					imagePullCredentials.ServiceAccountCredentials = append(imagePullCredentials.ServiceAccountCredentials, kubeletconfiginternal.ServiceAccountCredential{
+						ServiceAccountName:      saToken.ServiceAccountName,
+						ServiceAccountNamespace: saToken.ServiceAccountNamespace,
+						ServiceAccountUID:       saToken.ServiceAccountUID,
+						TokenHash:               s.AuthConfigHash,
+						ExpiresAt:               farFuture,
+					})
+				case string(credentialproviderapi.PodServiceAccountTokenCacheType):
+					imagePullCredentials.PodServiceAccountCredentials = append(imagePullCredentials.PodServiceAccountCredentials, kubeletconfiginternal.PodServiceAccountCredential{
+						ServiceAccountName:      saToken.ServiceAccountName,
+						ServiceAccountNamespace: saToken.ServiceAccountNamespace,
+						ServiceAccountUID:       saToken.ServiceAccountUID,
+						PodName:                 saToken.PodName,
+						PodNamespace:            saToken.PodNamespace,
+						PodUID:                  saToken.PodUID,
+						TokenHash:               s.AuthConfigHash,
+						ExpiresAt:               farFuture,
+					})
+				}
+			} else if s.Source.Secret.UID != "" {
+				// Handle traditional secret-based credentials (existing KEP 2535 logic)
+				imagePullCredentials.KubernetesSecrets = append(imagePullCredentials.KubernetesSecrets, kubeletconfiginternal.ImagePullSecret{
+					UID:            s.Source.Secret.UID,
+					Name:           s.Source.Secret.Name,
+					Namespace:      s.Source.Secret.Namespace,
+					CredentialHash: s.AuthConfigHash,
+				})
+			}
 		}
 
-		pullRequired := m.imagePullManager.MustAttemptImagePull(requestedImage, imageRef, imagePullSecrets)
+		pullRequired := m.imagePullManager.MustAttemptImagePullWithCredentials(requestedImage, imageRef, &imagePullCredentials)
 		if !pullRequired {
 			msg := fmt.Sprintf("Container image %q already present on machine and can be accessed by the pod", requestedImage)
 			m.logIt(objRef, v1.EventTypeNormal, events.PulledImage, logPrefix, msg, klog.Info)
@@ -365,8 +399,46 @@ func trackedToImagePullCreds(trackedCreds *credentialprovider.TrackedAuthConfig)
 	ret := &kubeletconfiginternal.ImagePullCredentials{}
 	switch {
 	case trackedCreds == nil, trackedCreds.Source == nil:
+		// This handles several cases:
+		// 1. No credentials found
+		// 2. Traditional credential providers (e.g., docker config, kubelet flags)
+		// 3. Plugin-provided credentials without service account context (e.g., static pods)
+		// For KEP 2535, these credentials are considered accessible to all pods on the node
 		ret.NodePodsAccessible = true
-	default:
+	case trackedCreds.Source.ServiceAccountToken != nil:
+		// Handle service account token-based credentials (KEP-4412)
+		saToken := trackedCreds.Source.ServiceAccountToken
+		// TODO: We need to get the cache expiration time from the plugin cache
+		// For now, we'll use a far future time as a placeholder
+		farFuture := metav1.NewTime(time.Now().Add(24 * time.Hour))
+
+		switch saToken.CacheType {
+		case "ServiceAccount":
+			ret.ServiceAccountCredentials = []kubeletconfiginternal.ServiceAccountCredential{
+				{
+					ServiceAccountName:      saToken.ServiceAccountName,
+					ServiceAccountNamespace: saToken.ServiceAccountNamespace,
+					ServiceAccountUID:       saToken.ServiceAccountUID,
+					TokenHash:               trackedCreds.AuthConfigHash,
+					ExpiresAt:               farFuture,
+				},
+			}
+		case "Pod":
+			ret.PodServiceAccountCredentials = []kubeletconfiginternal.PodServiceAccountCredential{
+				{
+					ServiceAccountName:      saToken.ServiceAccountName,
+					ServiceAccountNamespace: saToken.ServiceAccountNamespace,
+					ServiceAccountUID:       saToken.ServiceAccountUID,
+					PodName:                 saToken.PodName,
+					PodNamespace:            saToken.PodNamespace,
+					PodUID:                  saToken.PodUID,
+					TokenHash:               trackedCreds.AuthConfigHash,
+					ExpiresAt:               farFuture,
+				},
+			}
+		}
+	case trackedCreds.Source.Secret.UID != "" || trackedCreds.Source.Secret.Name != "" || trackedCreds.Source.Secret.Namespace != "":
+		// Handle traditional secret-based credentials (existing KEP 2535 logic)
 		sourceSecret := trackedCreds.Source.Secret
 		ret.KubernetesSecrets = []kubeletconfiginternal.ImagePullSecret{
 			{
@@ -376,6 +448,11 @@ func trackedToImagePullCreds(trackedCreds *credentialprovider.TrackedAuthConfig)
 				CredentialHash: trackedCreds.AuthConfigHash,
 			},
 		}
+	default:
+		// Handle plugin-provided credentials without service account context or secret
+		// This represents plugins that provide credentials for static pods or infrastructure components
+		// For KEP 2535, these credentials are considered accessible to all pods on the node
+		ret.NodePodsAccessible = true
 	}
 
 	return ret

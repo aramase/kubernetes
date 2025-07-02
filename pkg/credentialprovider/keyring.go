@@ -87,13 +87,24 @@ func NewTrackedAuthConfig(c *AuthConfig, src *CredentialSource) *TrackedAuthConf
 }
 
 type CredentialSource struct {
-	Secret SecretCoordinates
+	Secret              SecretCoordinates
+	ServiceAccountToken *ServiceAccountTokenSource
 }
 
 type SecretCoordinates struct {
 	UID       string
 	Namespace string
 	Name      string
+}
+
+type ServiceAccountTokenSource struct {
+	ServiceAccountName      string
+	ServiceAccountNamespace string
+	ServiceAccountUID       string
+	PodName                 string
+	PodNamespace            string
+	PodUID                  string
+	CacheType               string // "ServiceAccount" or "Pod"
 }
 
 // AuthConfig contains authorization information for connecting to a Registry
@@ -316,9 +327,19 @@ func (dk *providersDockerKeyring) Lookup(image string) ([]TrackedAuthConfig, boo
 	keyring := &BasicDockerKeyring{}
 
 	for _, p := range dk.Providers {
-		// TODO: the source should probably change once we depend on service accounts (KEP-4412).
-		//       Perhaps `Provide()` should return the source modified to accommodate this?
-		keyring.Add(nil, p.Provide(image))
+		var credSource *CredentialSource
+		dockerConfig := p.Provide(image)
+
+		// If this provider has service account token context, extract it
+		if saProvider, ok := p.(ServiceAccountTokenProvider); ok {
+			if saTokenSource := saProvider.GetServiceAccountTokenSource(); saTokenSource != nil {
+				credSource = &CredentialSource{
+					ServiceAccountToken: saTokenSource,
+				}
+			}
+		}
+
+		keyring.Add(credSource, dockerConfig)
 	}
 
 	return keyring.Lookup(image)
@@ -364,4 +385,14 @@ func hashAuthConfig(creds *AuthConfig) string {
 	hash := sha256.New()
 	hash.Write([]byte(credBytes))
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// ServiceAccountTokenProvider is an optional interface for credential providers
+// that support service account token-based authentication (KEP-4412).
+// Providers that implement this interface can provide service account context
+// alongside their credentials.
+type ServiceAccountTokenProvider interface {
+	// GetServiceAccountTokenSource returns the service account token context
+	// for the last credential request, or nil if not applicable
+	GetServiceAccountTokenSource() *ServiceAccountTokenSource
 }

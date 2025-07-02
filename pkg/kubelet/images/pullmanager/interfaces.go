@@ -62,6 +62,17 @@ type ImagePullManager interface {
 	//
 	// `image` is the content of the pod's container `image` field.
 	MustAttemptImagePull(image, imageRef string, credentials []kubeletconfiginternal.ImagePullSecret) bool
+	// MustAttemptImagePullWithCredentials evaluates the policy for the image specified in
+	// `image` and if the policy demands verification, it checks the internal
+	// cache to see if there's a record of pulling the image with the presented
+	// set of credentials (including service account and pod-level service account credentials)
+	// or if the image can be accessed by any of the node's pods.
+	//
+	// Returns true if the policy demands verification and no record of the pull
+	// was found in the cache.
+	//
+	// `image` is the content of the pod's container `image` field.
+	MustAttemptImagePullWithCredentials(image, imageRef string, credentials *kubeletconfiginternal.ImagePullCredentials) bool
 	// PruneUnknownRecords deletes all of the cache ImagePulledRecords for each of the images
 	// whose imageRef does not appear in the `imageList` iff such an record was last updated
 	// _before_ the `until` timestamp.

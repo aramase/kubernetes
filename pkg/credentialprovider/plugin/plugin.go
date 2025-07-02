@@ -339,6 +339,10 @@ type perPodPluginProvider struct {
 	podUID       types.UID
 
 	serviceAccountName string
+
+	// lastServiceAccountTokenSource holds the service account token context from the last Provide call
+	// This is used by the keyring to associate service account context with credentials
+	lastServiceAccountTokenSource *credentialprovider.ServiceAccountTokenSource
 }
 
 // Enabled always returns true since registration of the plugin via kubelet implies it should be enabled.
@@ -347,14 +351,31 @@ func (p *perPodPluginProvider) Enabled() bool {
 }
 
 func (p *perPodPluginProvider) Provide(image string) credentialprovider.DockerConfig {
-	return p.provider.provide(image, p.podNamespace, p.podName, p.podUID, p.serviceAccountName)
+	// Call the modified provide method that returns service account context
+	config, saTokenSource, err := p.provider.provideWithServiceAccountContext(image, p.podNamespace, p.podName, p.podUID, p.serviceAccountName)
+	if err != nil {
+		klog.Errorf("Error getting credentials with service account context: %v", err)
+		// Store nil context on error
+		p.lastServiceAccountTokenSource = nil
+		return credentialprovider.DockerConfig{}
+	}
+
+	// Store the service account token source for use by GetServiceAccountTokenSource
+	p.lastServiceAccountTokenSource = saTokenSource
+	return config
 }
 
-// provide returns a credentialprovider.DockerConfig based on the credentials returned
-// from cache or the exec plugin.
-func (p *pluginProvider) provide(image, podNamespace, podName string, podUID types.UID, serviceAccountName string) credentialprovider.DockerConfig {
+// GetServiceAccountTokenSource implements the ServiceAccountTokenProvider interface.
+// It returns the service account token context from the last Provide call.
+func (p *perPodPluginProvider) GetServiceAccountTokenSource() *credentialprovider.ServiceAccountTokenSource {
+	return p.lastServiceAccountTokenSource
+}
+
+// provideWithServiceAccountContext returns credentials along with service account context information.
+// This method handles both service account token mode and non-service account mode.
+func (p *pluginProvider) provideWithServiceAccountContext(image, podNamespace, podName string, podUID types.UID, serviceAccountName string) (credentialprovider.DockerConfig, *credentialprovider.ServiceAccountTokenSource, error) {
 	if !p.isImageAllowed(image) {
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, nil
 	}
 
 	var serviceAccountUID types.UID
@@ -366,7 +387,7 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 	if p.serviceAccountProvider != nil {
 		if len(serviceAccountName) == 0 && p.serviceAccountProvider.requireServiceAccount {
 			klog.V(5).Infof("Service account name is empty for pod %s/%s", podNamespace, podName)
-			return credentialprovider.DockerConfig{}
+			return credentialprovider.DockerConfig{}, nil, nil
 		}
 
 		// If the service account name is empty and the plugin has indicated that invoking the plugin
@@ -380,28 +401,28 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 					// for image pull. If any of the required annotation is missing, we will not invoke the plugin. We will log the error
 					// at higher verbosity level as it could be noisy.
 					klog.V(5).Infof("Failed to get service account data %s/%s: %v", podNamespace, serviceAccountName, err)
-					return credentialprovider.DockerConfig{}
+					return credentialprovider.DockerConfig{}, nil, nil
 				}
 
 				klog.Errorf("Failed to get service account %s/%s: %v", podNamespace, serviceAccountName, err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("failed to get service account %s/%s: %w", podNamespace, serviceAccountName, err)
 			}
 
 			if serviceAccountToken, err = p.serviceAccountProvider.getServiceAccountToken(podNamespace, podName, serviceAccountName, podUID); err != nil {
 				klog.Errorf("Error getting service account token %s/%s: %v", podNamespace, serviceAccountName, err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error getting service account token %s/%s: %w", podNamespace, serviceAccountName, err)
 			}
 
 			serviceAccountCacheKey, err = generateServiceAccountCacheKey(podNamespace, serviceAccountName, serviceAccountUID, saAnnotations)
 			if err != nil {
 				klog.Errorf("Error generating service account cache key: %v", err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error generating service account cache key: %w", err)
 			}
 
 			podCacheKey, err = generatePodCacheKey(podNamespace, podName, string(podUID))
 			if err != nil {
 				klog.Errorf("Error generating pod cache key with service account: %v", err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error generating pod cache key with service account: %w", err)
 			}
 		}
 	}
@@ -410,11 +431,25 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 	cachedConfig, found, errCache := p.getCachedCredentials(image, serviceAccountCacheKey, podCacheKey)
 	if errCache != nil {
 		klog.Errorf("Failed to get cached docker config: %v", err)
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, fmt.Errorf("failed to get cached docker config: %w", errCache)
 	}
 
 	if found {
-		return cachedConfig
+		// If we found cached credentials and we have service account context, create the service account token source
+		var saTokenSource *credentialprovider.ServiceAccountTokenSource
+		if len(serviceAccountName) > 0 && p.serviceAccountProvider != nil {
+			saTokenSource = &credentialprovider.ServiceAccountTokenSource{
+				ServiceAccountName:      serviceAccountName,
+				ServiceAccountNamespace: podNamespace,
+				ServiceAccountUID:       string(serviceAccountUID),
+				PodName:                 podName,
+				PodNamespace:            podNamespace,
+				PodUID:                  string(podUID),
+				// For cached credentials, we don't know the original cache type, so we'll assume Pod-level
+				CacheType: string(credentialproviderapi.PodServiceAccountTokenCacheType),
+			}
+		}
+		return cachedConfig, saTokenSource, nil
 	}
 
 	// ExecPlugin is wrapped in single flight to exec plugin once for concurrent same image request.
@@ -435,7 +470,7 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 		// for different containers in the same pod using the same image.
 		if singleFlightKey, err = generateSingleFlightKey(image, getHashIfNotEmpty(serviceAccountToken), saAnnotations); err != nil {
 			klog.Errorf("Error generating singleflight key: %v", err)
-			return credentialprovider.DockerConfig{}
+			return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error generating singleflight key: %w", err)
 		}
 	}
 	res, err, _ := p.group.Do(singleFlightKey, func() (interface{}, error) {
@@ -444,28 +479,28 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 
 	if err != nil {
 		klog.Errorf("Failed getting credential from external registry credential provider: %v", err)
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, fmt.Errorf("failed getting credential from external registry credential provider: %w", err)
 	}
 
 	response, ok := res.(*credentialproviderapi.CredentialProviderResponse)
 	if !ok {
 		klog.Errorf("Invalid response type returned by external credential provider")
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, fmt.Errorf("invalid response type returned by external credential provider")
 	}
 
 	if len(serviceAccountToken) == 0 && len(response.ServiceAccountTokenCacheType) > 0 {
 		klog.Errorf("credential provider plugin not allowed to return serviceAccountTokenCacheType when serviceAccountToken is not provided")
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, fmt.Errorf("credential provider plugin not allowed to return serviceAccountTokenCacheType when serviceAccountToken is not provided")
 	}
 	if len(serviceAccountToken) > 0 {
 		if len(response.ServiceAccountTokenCacheType) == 0 {
 			klog.Errorf("credential provider plugin did not return serviceAccountTokenCacheType when serviceAccountToken was provided")
-			return credentialprovider.DockerConfig{}
+			return credentialprovider.DockerConfig{}, nil, fmt.Errorf("credential provider plugin did not return serviceAccountTokenCacheType when serviceAccountToken was provided")
 		}
 		if response.ServiceAccountTokenCacheType != credentialproviderapi.ServiceAccountServiceAccountTokenCacheType &&
 			response.ServiceAccountTokenCacheType != credentialproviderapi.PodServiceAccountTokenCacheType {
 			klog.Errorf("credential provider plugin returned invalid serviceAccountTokenCacheType: %q", response.ServiceAccountTokenCacheType)
-			return credentialprovider.DockerConfig{}
+			return credentialprovider.DockerConfig{}, nil, fmt.Errorf("credential provider plugin returned invalid serviceAccountTokenCacheType: %q", response.ServiceAccountTokenCacheType)
 		}
 	}
 
@@ -480,7 +515,7 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 		cacheKey = globalCacheKey
 	default:
 		klog.Errorf("credential provider plugin did not return a valid cacheKeyType: %q", cacheKeyType)
-		return credentialprovider.DockerConfig{}
+		return credentialprovider.DockerConfig{}, nil, fmt.Errorf("credential provider plugin did not return a valid cacheKeyType: %q", cacheKeyType)
 	}
 
 	dockerConfig := make(credentialprovider.DockerConfig, len(response.Auth))
@@ -491,16 +526,30 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 		}
 	}
 
+	// Create service account token source if we have service account context
+	var saTokenSource *credentialprovider.ServiceAccountTokenSource
+	if len(serviceAccountName) > 0 && p.serviceAccountProvider != nil {
+		saTokenSource = &credentialprovider.ServiceAccountTokenSource{
+			ServiceAccountName:      serviceAccountName,
+			ServiceAccountNamespace: podNamespace,
+			ServiceAccountUID:       string(serviceAccountUID),
+			PodName:                 podName,
+			PodNamespace:            podNamespace,
+			PodUID:                  string(podUID),
+			CacheType:               string(response.ServiceAccountTokenCacheType),
+		}
+	}
+
 	// cache duration was explicitly 0 so don't cache this response at all.
 	if response.CacheDuration != nil && response.CacheDuration.Duration == 0 {
-		return dockerConfig
+		return dockerConfig, saTokenSource, nil
 	}
 
 	var expiresAt time.Time
 	// nil cache duration means use the default cache duration
 	if response.CacheDuration == nil {
 		if p.defaultCacheDuration == 0 {
-			return dockerConfig
+			return dockerConfig, saTokenSource, nil
 		}
 		expiresAt = p.clock.Now().Add(p.defaultCacheDuration)
 	} else {
@@ -513,13 +562,13 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 			cacheKey, err = generateCacheKeyWithServiceAccountCacheKey(cacheKey, serviceAccountCacheKey)
 			if err != nil {
 				klog.Errorf("Error generating cache key with service account: %v", err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error generating cache key with service account: %w", err)
 			}
 		case credentialproviderapi.PodServiceAccountTokenCacheType:
 			cacheKey, err = generateCacheKeyWithServiceAccountAndPodCacheKey(cacheKey, serviceAccountCacheKey, podCacheKey)
 			if err != nil {
 				klog.Errorf("Error generating cache key with pod cache key: %v", err)
-				return credentialprovider.DockerConfig{}
+				return credentialprovider.DockerConfig{}, nil, fmt.Errorf("error generating cache key with pod cache key: %w", err)
 			}
 		}
 	}
@@ -534,7 +583,7 @@ func (p *pluginProvider) provide(image, podNamespace, podName string, podUID typ
 		klog.Errorf("Error adding auth entry to cache: %v", err)
 	}
 
-	return dockerConfig
+	return dockerConfig, saTokenSource, nil
 }
 
 // Enabled always returns true since registration of the plugin via kubelet implies it should be enabled.
