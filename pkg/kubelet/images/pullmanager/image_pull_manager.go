@@ -19,6 +19,7 @@ package pullmanager
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -179,7 +180,7 @@ func (f *PullManager) decrementImagePullIntent(image string) {
 	f.decrementIntentCounterForImage(image)
 }
 
-func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []kubeletconfiginternal.ImagePullSecret) bool {
+func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []kubeletconfiginternal.ImagePullSecret, serviceAccountTokenCredentials []kubeletconfiginternal.ImagePullServiceAccountTokenSource) bool {
 	if len(imageRef) == 0 {
 		return true
 	}
@@ -253,10 +254,6 @@ func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []
 		return false
 	}
 
-	if len(cachedCreds.KubernetesSecrets) == 0 {
-		return true
-	}
-
 	for _, podSecret := range podSecrets {
 		for _, cachedSecret := range cachedCreds.KubernetesSecrets {
 
@@ -288,6 +285,25 @@ func (f *PullManager) MustAttemptImagePull(image, imageRef string, podSecrets []
 					}
 					return false
 				}
+			}
+		}
+	}
+
+	for _, serviceAccountToken := range serviceAccountTokenCredentials {
+		for _, cachedServiceAccountToken := range cachedCreds.ServiceAccountTokenSources {
+			serviceAccountMatches := serviceAccountToken.Audience == cachedServiceAccountToken.Audience &&
+				serviceAccountToken.Namespace == cachedServiceAccountToken.Namespace &&
+				serviceAccountToken.ServiceAccountName == cachedServiceAccountToken.ServiceAccountName &&
+				serviceAccountToken.ServiceAccountUID == cachedServiceAccountToken.ServiceAccountUID &&
+				reflect.DeepEqual(serviceAccountToken.ServiceAccountAnnotations, cachedServiceAccountToken.ServiceAccountAnnotations)
+
+			if serviceAccountToken.CacheType == cachedServiceAccountToken.CacheType && serviceAccountToken.CacheType == "Pod" {
+				serviceAccountMatches = serviceAccountMatches && serviceAccountToken.PodName == cachedServiceAccountToken.PodName &&
+					serviceAccountToken.PodUID == cachedServiceAccountToken.PodUID
+			}
+
+			if serviceAccountMatches {
+				return false
 			}
 		}
 	}
