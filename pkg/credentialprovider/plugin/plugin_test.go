@@ -768,7 +768,7 @@ func Test_getCachedCredentials(t *testing.T) {
 			fakeClock.Step(tc.step)
 
 			// getCachedCredentials returns unexpired credentials.
-			res, _, err := p.getCachedCredentials(tc.getKey, "", "")
+			res, _, _, err := p.getCachedCredentials(tc.getKey, "", "")
 			if err != nil {
 				t.Errorf("Unexpected error %v", err)
 			}
@@ -951,7 +951,7 @@ func Test_getCachedCredentials_pluginUsingServiceAccount(t *testing.T) {
 			}
 			fakeClock.Step(tc.step)
 
-			res, _, err := p.getCachedCredentials(tc.getKey, serviceAccountCacheKey, podCacheKey)
+			res, _, _, err := p.getCachedCredentials(tc.getKey, serviceAccountCacheKey, podCacheKey)
 			if err != nil {
 				t.Errorf("Unexpected error %v", err)
 			}
@@ -1147,9 +1147,10 @@ func Test_RegistryCacheKeyType(t *testing.T) {
 	tclock := clock.RealClock{}
 
 	tests := []struct {
-		name              string
-		pluginProvider    *perPodPluginProvider
-		expectedCacheKeys func(p *pluginProvider) []string
+		name                              string
+		pluginProvider                    *perPodPluginProvider
+		expectedCacheKeys                 func(p *pluginProvider) []string
+		expectedServiceAccountTokenSource *credentialprovider.ServiceAccountTokenSource
 	}{
 		{
 			name: "plugin not using service account token",
@@ -1235,6 +1236,19 @@ func Test_RegistryCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "ServiceAccount",
+			},
 		},
 		{
 			name: "plugin using service account token, pod cache type",
@@ -1296,6 +1310,19 @@ func Test_RegistryCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "Pod",
+			},
 		},
 	}
 
@@ -1309,9 +1336,7 @@ func Test_RegistryCacheKeyType(t *testing.T) {
 			}
 
 			dockerConfig := test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 
 			cacheKeys := test.pluginProvider.provider.cache.ListKeys()
 			expectedCacheKeys := test.expectedCacheKeys(test.pluginProvider.provider)
@@ -1323,9 +1348,7 @@ func Test_RegistryCacheKeyType(t *testing.T) {
 			// from cache, otherwise Provider should panic
 			test.pluginProvider.provider.plugin = nil
 			dockerConfig = test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config after niling out plugin: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 		})
 	}
 }
@@ -1334,9 +1357,10 @@ func Test_ImageCacheKeyType(t *testing.T) {
 	tclock := clock.RealClock{}
 
 	tests := []struct {
-		name              string
-		pluginProvider    *perPodPluginProvider
-		expectedCacheKeys func(p *pluginProvider) []string
+		name                              string
+		pluginProvider                    *perPodPluginProvider
+		expectedCacheKeys                 func(p *pluginProvider) []string
+		expectedServiceAccountTokenSource *credentialprovider.ServiceAccountTokenSource
 	}{
 		{
 			name: "plugin not using service account token",
@@ -1422,6 +1446,19 @@ func Test_ImageCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "ServiceAccount",
+			},
 		},
 		{
 			name: "plugin using service account token, pod cache type",
@@ -1483,6 +1520,19 @@ func Test_ImageCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "Pod",
+			},
 		},
 	}
 
@@ -1496,12 +1546,9 @@ func Test_ImageCacheKeyType(t *testing.T) {
 			}
 
 			dockerConfig := test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 
 			cacheKeys := test.pluginProvider.provider.cache.ListKeys()
-
 			expectedCacheKeys := test.expectedCacheKeys(test.pluginProvider.provider)
 			if !reflect.DeepEqual(cacheKeys, expectedCacheKeys) {
 				t.Fatalf("unexpected cache keys: got %v, expected %v", cacheKeys, expectedCacheKeys)
@@ -1511,9 +1558,7 @@ func Test_ImageCacheKeyType(t *testing.T) {
 			// from cache, otherwise Provider should panic
 			test.pluginProvider.provider.plugin = nil
 			dockerConfig = test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config after niling out plugin: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 		})
 	}
 }
@@ -1522,9 +1567,10 @@ func Test_GlobalCacheKeyType(t *testing.T) {
 	tclock := clock.RealClock{}
 
 	tests := []struct {
-		name              string
-		pluginProvider    *perPodPluginProvider
-		expectedCacheKeys func(p *pluginProvider) []string
+		name                              string
+		pluginProvider                    *perPodPluginProvider
+		expectedCacheKeys                 func(p *pluginProvider) []string
+		expectedServiceAccountTokenSource *credentialprovider.ServiceAccountTokenSource
 	}{
 		{
 			name: "plugin not using service account token",
@@ -1610,6 +1656,19 @@ func Test_GlobalCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "ServiceAccount",
+			},
 		},
 		{
 			name: "plugin using service account token, pod cache type",
@@ -1671,6 +1730,19 @@ func Test_GlobalCacheKeyType(t *testing.T) {
 				}
 				return []string{cacheKey}
 			},
+			expectedServiceAccountTokenSource: &credentialprovider.ServiceAccountTokenSource{
+				Audience:           "audience",
+				Namespace:          "namespace",
+				ServiceAccountName: "service-account-name",
+				ServiceAccountUID:  "service-account-uid",
+				ServiceAccountAnnotations: map[string]string{
+					"prefix.io/annotation-1": "value1",
+					"prefix.io/annotation-2": "value2",
+				},
+				PodName:   "pod-name",
+				PodUID:    "pod-uid",
+				CacheType: "Pod",
+			},
 		},
 	}
 
@@ -1684,9 +1756,7 @@ func Test_GlobalCacheKeyType(t *testing.T) {
 			}
 
 			dockerConfig := test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 
 			cacheKeys := test.pluginProvider.provider.cache.ListKeys()
 			expectedCacheKeys := test.expectedCacheKeys(test.pluginProvider.provider)
@@ -1698,9 +1768,7 @@ func Test_GlobalCacheKeyType(t *testing.T) {
 			// from cache, otherwise Provider should panic
 			test.pluginProvider.provider.plugin = nil
 			dockerConfig = test.pluginProvider.Provide("test.registry.io/foo/bar")
-			if !reflect.DeepEqual(dockerConfig, expectedDockerConfig) {
-				t.Fatalf("unexpected docker config after niling out plugin: %v, expected: %v", dockerConfig, expectedDockerConfig)
-			}
+			validatePluginResponse(t, dockerConfig, expectedDockerConfig, test.expectedServiceAccountTokenSource, test.pluginProvider.GetServiceAccountTokenSource())
 		})
 	}
 }
@@ -2031,5 +2099,16 @@ func TestRequiredAnnotationNotFoundErr(t *testing.T) {
 				t.Errorf("expected %v, got %v", test.expected, got)
 			}
 		})
+	}
+}
+
+func validatePluginResponse(t *testing.T, expected, actual credentialprovider.DockerConfig, expectedSource, actualSource *credentialprovider.ServiceAccountTokenSource) {
+	t.Helper()
+
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("expected docker config %v, got %v", expected, actual)
+	}
+	if !reflect.DeepEqual(expectedSource, actualSource) {
+		t.Errorf("expected service account token source %v, got %v", expectedSource, actualSource)
 	}
 }

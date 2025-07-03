@@ -87,13 +87,29 @@ func NewTrackedAuthConfig(c *AuthConfig, src *CredentialSource) *TrackedAuthConf
 }
 
 type CredentialSource struct {
-	Secret SecretCoordinates
+	Secret              SecretCoordinates
+	ServiceAccountToken *ServiceAccountTokenSource
 }
 
 type SecretCoordinates struct {
 	UID       string
 	Namespace string
 	Name      string
+}
+
+// ServiceAccountTokenSource is used to provide a service account token
+type ServiceAccountTokenSource struct {
+	Audience string
+
+	Namespace                 string
+	ServiceAccountName        string
+	ServiceAccountUID         string
+	ServiceAccountAnnotations map[string]string
+	PodName                   string
+	PodUID                    string
+	// CacheType indicates how the kubelet should cache credentials when
+	// the plugin is provided with a serviceAccountToken in the request.
+	CacheType string // ServiceAccountTokenCacheType ("ServiceAccount" or "Pod")
 }
 
 // AuthConfig contains authorization information for connecting to a Registry
@@ -316,8 +332,6 @@ func (dk *providersDockerKeyring) Lookup(image string) ([]TrackedAuthConfig, boo
 	keyring := &BasicDockerKeyring{}
 
 	for _, p := range dk.Providers {
-		// TODO: the source should probably change once we depend on service accounts (KEP-4412).
-		//       Perhaps `Provide()` should return the source modified to accommodate this?
 		keyring.Add(nil, p.Provide(image))
 	}
 
