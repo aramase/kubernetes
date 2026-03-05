@@ -131,10 +131,8 @@ func (c *dispatcher) Dispatch(ctx context.Context, a admission.Attributes, o adm
 			continue
 		}
 		if !matches {
-			// Policy definition does not match request
 			continue
 		} else if hook.ConfigurationError != nil {
-			// Configuration error.
 			addConfigError(hook.ConfigurationError, definition, nil)
 			continue
 		}

@@ -26,14 +26,18 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/apiserver/pkg/admission/plugin/cel"
+	"k8s.io/apiserver/pkg/admission/plugin/policy/config"
 	"k8s.io/apiserver/pkg/admission/plugin/policy/generic"
+	"k8s.io/apiserver/pkg/admission/plugin/policy/manifest/source"
 	"k8s.io/apiserver/pkg/admission/plugin/policy/matching"
+	"k8s.io/apiserver/pkg/admission/plugin/webhook/manifest/metrics"
 	"k8s.io/apiserver/pkg/admission/plugin/webhook/matchconditions"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/cel/environment"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -56,7 +60,7 @@ func getCompositionEnvTemplateWithStrictCost() *environment.EnvSet {
 // Register registers a plugin
 func Register(plugins *admission.Plugins) {
 	plugins.Register(PluginName, func(configFile io.Reader) (admission.Interface, error) {
-		return NewPlugin(configFile), nil
+		return NewPlugin(configFile)
 	})
 }
 
@@ -73,8 +77,39 @@ type Plugin struct {
 var _ admission.Interface = &Plugin{}
 var _ admission.ValidationInterface = &Plugin{}
 var _ initializer.WantsExcludedAdmissionResources = &Plugin{}
+var _ initializer.WantsManifestLoaders = &Plugin{}
 
-func NewPlugin(_ io.Reader) *Plugin {
+// SetManifestLoaders provides the manifest load functions for scheme-based defaulting and validation.
+func (a *Plugin) SetManifestLoaders(loaders *initializer.ManifestLoaders) {
+	if loaders == nil || loaders.LoadValidatingPolicyManifests == nil {
+		return
+	}
+	loadFunc := loaders.LoadValidatingPolicyManifests
+	a.SetStaticSourceFactory(func(manifestsDir string) (generic.Source[PolicyHook], func(ctx context.Context) error, error) {
+		staticSource := source.NewStaticPolicySource[*v1.ValidatingAdmissionPolicy, *v1.ValidatingAdmissionPolicyBinding, PolicyEvaluator](manifestsDir, a.GetAPIServerID(), compilePolicy,
+			func(dir string) ([]*v1.ValidatingAdmissionPolicy, []*v1.ValidatingAdmissionPolicyBinding, string, error) {
+				return loadFunc(dir)
+			},
+			func(b *v1.ValidatingAdmissionPolicyBinding) string { return b.Spec.PolicyName },
+			metrics.VAPManifestType,
+		)
+		if err := staticSource.LoadInitial(); err != nil {
+			return nil, nil, err
+		}
+		return staticSource, staticSource.Run, nil
+	})
+}
+
+func NewPlugin(configFile io.Reader) (*Plugin, error) {
+	cfg, err := config.LoadValidatingConfig(configFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cfg.StaticManifestsDir) > 0 {
+		klog.InfoS("validating admission policy static manifests directory configured", "dir", cfg.StaticManifestsDir)
+	}
+
 	handler := admission.NewHandler(admission.Connect, admission.Create, admission.Delete, admission.Update)
 
 	p := &Plugin{
@@ -98,7 +133,8 @@ func NewPlugin(_ io.Reader) *Plugin {
 		),
 	}
 	p.SetEnabled(true)
-	return p
+	p.SetStaticManifestsDir(cfg.StaticManifestsDir)
+	return p, nil
 }
 
 // Validate makes an admission decision based on the request attributes.
