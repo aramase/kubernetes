@@ -506,3 +506,209 @@ func getMetrics(t *testing.T, ctx context.Context, adminClient *kubernetes.Clien
 
 	return gotMetricStrings
 }
+
+// ---------------------------------------------------------------------------
+// authConfigBuilder – fluent builder for AuthenticationConfiguration YAML
+// ---------------------------------------------------------------------------
+
+type authConfigBuilder struct {
+	issuers []issuerConfig
+}
+
+type issuerConfig struct {
+	issuerURL, discoveryURL string
+	audiences               []string
+	audienceMatchPolicy     string
+	certificateAuthority    string
+	caCertEmptyExplicit     bool
+	egressSelectorType      string
+	username                usernameMapping
+	groups, uid             string
+	extra                   []extraMapping
+	claimValidationRules    []validationRule
+	userValidationRules     []validationRule
+}
+
+type usernameMapping struct {
+	claim, expression, prefix string
+}
+
+type extraMapping struct {
+	key, valueExpression string
+}
+
+type validationRule struct {
+	expression, message string
+}
+
+// newAuthConfigBuilder creates a builder pre-configured with a single issuer,
+// defaultOIDCClientID as the audience, and username expression "'k8s-' + claims.sub".
+func newAuthConfigBuilder(issuerURL, caCert string) *authConfigBuilder {
+	return &authConfigBuilder{
+		issuers: []issuerConfig{
+			{
+				issuerURL:            issuerURL,
+				audiences:            []string{defaultOIDCClientID},
+				certificateAuthority: caCert,
+				username:             usernameMapping{expression: "'k8s-' + claims.sub"},
+			},
+		},
+	}
+}
+
+// newEmptyAuthConfig creates a builder with no jwt block.
+func newEmptyAuthConfig() *authConfigBuilder {
+	return &authConfigBuilder{}
+}
+
+// newMultiIssuerAuthConfig creates a builder with no issuers; use addIssuer to append them.
+func newMultiIssuerAuthConfig() *authConfigBuilder {
+	return &authConfigBuilder{}
+}
+
+func (b *authConfigBuilder) addIssuer(issuerURL, caCert string) *authConfigBuilder {
+	b.issuers = append(b.issuers, issuerConfig{
+		issuerURL:            issuerURL,
+		certificateAuthority: caCert,
+		username:             usernameMapping{expression: "'k8s-' + claims.sub"},
+	})
+	return b
+}
+
+func (b *authConfigBuilder) lastIssuer() *issuerConfig {
+	return &b.issuers[len(b.issuers)-1]
+}
+
+func (b *authConfigBuilder) withAudiences(audiences ...string) *authConfigBuilder {
+	b.lastIssuer().audiences = audiences
+	return b
+}
+
+func (b *authConfigBuilder) withAudienceMatchPolicy(policy string) *authConfigBuilder {
+	b.lastIssuer().audienceMatchPolicy = policy
+	return b
+}
+
+func (b *authConfigBuilder) withUsernameExpression(expression string) *authConfigBuilder {
+	b.lastIssuer().username = usernameMapping{expression: expression}
+	return b
+}
+
+func (b *authConfigBuilder) withUsernameClaim(claim, prefix string) *authConfigBuilder {
+	b.lastIssuer().username = usernameMapping{claim: claim, prefix: prefix}
+	return b
+}
+
+func (b *authConfigBuilder) withGroupsExpression(expression string) *authConfigBuilder {
+	b.lastIssuer().groups = expression
+	return b
+}
+
+func (b *authConfigBuilder) withUIDExpression(expression string) *authConfigBuilder {
+	b.lastIssuer().uid = expression
+	return b
+}
+
+func (b *authConfigBuilder) withExtra(key, valueExpression string) *authConfigBuilder {
+	iss := b.lastIssuer()
+	iss.extra = append(iss.extra, extraMapping{key: key, valueExpression: valueExpression})
+	return b
+}
+
+func (b *authConfigBuilder) withClaimValidationRule(expression, message string) *authConfigBuilder {
+	iss := b.lastIssuer()
+	iss.claimValidationRules = append(iss.claimValidationRules, validationRule{expression: expression, message: message})
+	return b
+}
+
+func (b *authConfigBuilder) withUserValidationRule(expression, message string) *authConfigBuilder {
+	iss := b.lastIssuer()
+	iss.userValidationRules = append(iss.userValidationRules, validationRule{expression: expression, message: message})
+	return b
+}
+
+func (b *authConfigBuilder) withEgressSelectorType(selectorType string) *authConfigBuilder {
+	b.lastIssuer().egressSelectorType = selectorType
+	return b
+}
+
+func (b *authConfigBuilder) withDiscoveryURL(url string) *authConfigBuilder {
+	b.lastIssuer().discoveryURL = url
+	return b
+}
+
+func (b *authConfigBuilder) withEmptyCertificateAuthority() *authConfigBuilder {
+	iss := b.lastIssuer()
+	iss.certificateAuthority = ""
+	iss.caCertEmptyExplicit = true
+	return b
+}
+
+func (b *authConfigBuilder) build() string {
+	var sb strings.Builder
+	sb.WriteString("\napiVersion: apiserver.config.k8s.io/v1\nkind: AuthenticationConfiguration\n")
+	if len(b.issuers) == 0 {
+		return sb.String()
+	}
+	sb.WriteString("jwt:\n")
+	for _, iss := range b.issuers {
+		sb.WriteString("- issuer:\n")
+		sb.WriteString(fmt.Sprintf("    url: %s\n", iss.issuerURL))
+		if iss.discoveryURL != "" {
+			sb.WriteString(fmt.Sprintf("    discoveryURL: %s\n", iss.discoveryURL))
+		}
+		if iss.egressSelectorType != "" {
+			sb.WriteString(fmt.Sprintf("    egressSelectorType: %s\n", iss.egressSelectorType))
+		}
+		sb.WriteString("    audiences:\n")
+		for _, a := range iss.audiences {
+			sb.WriteString(fmt.Sprintf("    - %s\n", a))
+		}
+		if iss.audienceMatchPolicy != "" {
+			sb.WriteString(fmt.Sprintf("    audienceMatchPolicy: %s\n", iss.audienceMatchPolicy))
+		}
+		if iss.caCertEmptyExplicit {
+			sb.WriteString("    certificateAuthority: \"\"\n")
+		} else if iss.certificateAuthority != "" {
+			sb.WriteString(fmt.Sprintf("    certificateAuthority: |\n        %s\n", indentCertificateAuthority(iss.certificateAuthority)))
+		}
+		sb.WriteString("  claimMappings:\n")
+		sb.WriteString("    username:\n")
+		if iss.username.expression != "" {
+			sb.WriteString(fmt.Sprintf("      expression: \"%s\"\n", iss.username.expression))
+		} else if iss.username.claim != "" {
+			sb.WriteString(fmt.Sprintf("      claim: %s\n", iss.username.claim))
+			sb.WriteString(fmt.Sprintf("      prefix: %s\n", iss.username.prefix))
+		}
+		if iss.groups != "" {
+			sb.WriteString("    groups:\n")
+			sb.WriteString(fmt.Sprintf("      expression: '%s'\n", iss.groups))
+		}
+		if iss.uid != "" {
+			sb.WriteString("    uid:\n")
+			sb.WriteString(fmt.Sprintf("      expression: \"%s\"\n", iss.uid))
+		}
+		if len(iss.extra) > 0 {
+			sb.WriteString("    extra:\n")
+			for _, e := range iss.extra {
+				sb.WriteString(fmt.Sprintf("    - key: \"%s\"\n", e.key))
+				sb.WriteString(fmt.Sprintf("      valueExpression: \"%s\"\n", e.valueExpression))
+			}
+		}
+		if len(iss.claimValidationRules) > 0 {
+			sb.WriteString("  claimValidationRules:\n")
+			for _, r := range iss.claimValidationRules {
+				sb.WriteString(fmt.Sprintf("  - expression: '%s'\n", r.expression))
+				sb.WriteString(fmt.Sprintf("    message: '%s'\n", r.message))
+			}
+		}
+		if len(iss.userValidationRules) > 0 {
+			sb.WriteString("  userValidationRules:\n")
+			for _, r := range iss.userValidationRules {
+				sb.WriteString(fmt.Sprintf("  - expression: \"%s\"\n", r.expression))
+				sb.WriteString(fmt.Sprintf("    message: \"%s\"\n", r.message))
+			}
+		}
+	}
+	return sb.String()
+}

@@ -84,21 +84,9 @@ func runTests(t *testing.T, useAuthenticationConfig bool) {
 				oidcServer = utilsoidc.BuildAndRunTestServer(t, caFilePath, caKeyFilePath, "")
 
 				if useAuthenticationConfig {
-					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      claim: user
-      prefix: %s
-`, oidcServer.URL(), defaultOIDCClientID, indentCertificateAuthority(string(caCertContent)), defaultOIDCUsernamePrefix)
+					authenticationConfig := newAuthConfigBuilder(oidcServer.URL(), string(caCertContent)).
+withUsernameClaim("user", defaultOIDCUsernamePrefix).
+build()
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, &signingPrivateKey.PublicKey)
 				} else {
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{oidcURL: oidcServer.URL(), oidcClientID: defaultOIDCClientID,
@@ -217,21 +205,9 @@ jwt:
 				oidcServer = utilsoidc.BuildAndRunTestServer(t, caFilePath, caKeyFilePath, "")
 
 				if useAuthenticationConfig {
-					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      claim: sub
-      prefix: %s
-`, oidcServer.URL(), defaultOIDCClientID, indentCertificateAuthority(string(caCertContent)), defaultOIDCUsernamePrefix)
+					authenticationConfig := newAuthConfigBuilder(oidcServer.URL(), string(caCertContent)).
+withUsernameClaim("sub", defaultOIDCUsernamePrefix).
+build()
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, &signingPrivateKey.PublicKey)
 				} else {
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{oidcURL: oidcServer.URL(), oidcClientID: defaultOIDCClientID, oidcCAFilePath: caFilePath, oidcUsernamePrefix: defaultOIDCUsernamePrefix}, &signingPrivateKey.PublicKey)
@@ -281,20 +257,9 @@ jwt:
 				oidcServer = utilsoidc.BuildAndRunTestServer(t, caFilePath, caKeyFilePath, "")
 
 				if useAuthenticationConfig {
-					authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: claims.sub
-`, oidcServer.URL(), defaultOIDCClientID, indentCertificateAuthority(string(caCertContent)))
+					authenticationConfig := newAuthConfigBuilder(oidcServer.URL(), string(caCertContent)).
+withUsernameExpression("claims.sub").
+build()
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, &signingPrivateKey.PublicKey)
 				} else {
 					apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{
@@ -403,21 +368,9 @@ func singleTestRunner[K utilsoidc.JosePrivateKey, L utilsoidc.JosePublicKey](
 		fn := func(t *testing.T, issuerURL, caCert string) string { return "" }
 		if useAuthenticationConfig {
 			fn = func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      claim: sub
-      prefix: %s
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert), defaultOIDCUsernamePrefix)
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withUsernameClaim("sub", defaultOIDCUsernamePrefix).
+					build()
 			}
 		}
 		oidcServer, apiServer, signingPrivateKey, caCert, certPath := tt.configureInfrastructure(t, fn, keyFunc)
@@ -530,22 +483,10 @@ func TestStructuredAuthenticationConfigCEL(t *testing.T) {
 		{
 			name: "username CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -580,24 +521,11 @@ jwt:
 		{
 			name: "groups CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    groups:
-      expression: '(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "prefix:" + role)'
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withGroupsExpression(`(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "prefix:" + role)`).
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -629,25 +557,11 @@ jwt:
 		{
 			name: "claim validation rule fails",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-  claimValidationRules:
-  - expression: 'claims.hd == "example.com"'
-    message: "the hd claim must be set to example.com"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withClaimValidationRule(`claims.hd == "example.com"`, "the hd claim must be set to example.com").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -674,30 +588,13 @@ jwt:
 		{
 			name: "extra mapping CEL expressions are ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    extra:
-    - key: "example.org/foo"
-      valueExpression: "'bar'"
-    - key: "example.org/baz"
-      valueExpression: "claims.baz"
-  userValidationRules:
-  - expression: "'bar' in user.extra['example.org/foo'] && 'qux' in user.extra['example.org/baz']"
-    message: "example.org/foo must be bar and example.org/baz must be qux"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withExtra("example.org/foo", "'bar'").
+					withExtra("example.org/baz", "claims.baz").
+					withUserValidationRule(`'bar' in user.extra['example.org/foo'] && 'qux' in user.extra['example.org/baz']`, "example.org/foo must be bar and example.org/baz must be qux").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -735,24 +632,11 @@ jwt:
 		{
 			name: "uid CEL expression is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    uid:
-      expression: "claims.uid"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withUIDExpression("claims.uid").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -784,27 +668,12 @@ jwt:
 		{
 			name: "user validation rule fails",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    groups:
-      expression: '(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "system:" + role)'
-  userValidationRules:
-  - expression: "user.groups.all(group, !group.startsWith('system:'))"
-    message: "groups cannot used reserved system: prefix"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withGroupsExpression(`(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "system:" + role)`).
+					withUserValidationRule(`user.groups.all(group, !group.startsWith('system:'))`, "groups cannot used reserved system: prefix").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -833,27 +702,12 @@ jwt:
 		{
 			name: "multiple audiences check with claim validation rule is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - baz
-    - foo
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    uid:
-      expression: "claims.uid"
-  claimValidationRules:
-  - expression: 'sets.equivalent(claims.aud, ["bar", "foo", "baz"])'
-    message: 'aud claim must be exactly match list ["bar", "foo", "baz"]'
-`, issuerURL, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences("baz", "foo").
+					withAudienceMatchPolicy("MatchAny").
+					withUIDExpression("claims.uid").
+					withClaimValidationRule(`sets.equivalent(claims.aud, ["bar", "foo", "baz"])`, `aud claim must be exactly match list ["bar", "foo", "baz"]`).
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -885,22 +739,10 @@ jwt:
 		{
 			name: "non-string jti claim doesn't result in authentication error",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -931,23 +773,11 @@ jwt:
 		{
 			name: "egress proxy is ok",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    egressSelectorType: cluster
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withEgressSelectorType("cluster").
+					build()
 			},
 			configureInfrastructure: configureTestInfrastructureWithEgressProxy[*rsa.PrivateKey, *rsa.PublicKey],
 			configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
@@ -1023,40 +853,17 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 		{
 			name: "old valid config to new valid config",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'panda-' + claims.sub"   # this is the only new part of the config
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withUsernameExpression("'panda-' + claims.sub").
+					build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.NoError(t, errorToCheck)
@@ -1086,41 +893,18 @@ jwt:
 		{
 			name: "old to new config with egress", // both configs are valid, but need to keep the test name short otherwise the UDS name can get too long on macOS
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    egressSelectorType: cluster   # this is a new part of the config
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'panda-' + claims.sub"   # this is a new part of the config
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withEgressSelectorType("cluster").
+					withUsernameExpression("'panda-' + claims.sub").
+					build()
 			},
 			configureTestInfrastructure: func(t *testing.T, fn authenticationConfigFunc) (*utilsoidc.TestServer, *kubeapiserverapptesting.TestServer, []byte, string) {
 				t.Helper()
@@ -1170,28 +954,14 @@ jwt:
 		{
 			name: "old empty config to new valid config",
 			authConfigFn: func(t *testing.T, _, _ string) string {
-				return `
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-`
+				return newEmptyAuthConfig().build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'snorlax-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withUsernameExpression("'snorlax-' + claims.sub").
+					build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.True(t, apierrors.IsUnauthorized(errorToCheck))
@@ -1219,40 +989,17 @@ jwt:
 		{
 			name: "old invalid config to new valid config",
 			authConfigFn: func(t *testing.T, issuerURL, _ string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: ""  # missing CA
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID)
+				return newAuthConfigBuilder(issuerURL, "").
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withEmptyCertificateAuthority().
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    # this is the only new part of the config
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.True(t, apierrors.IsUnauthorized(errorToCheck))
@@ -1275,40 +1022,17 @@ jwt:
 		{
 			name: "old valid config to new structurally invalid config (should be ignored)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claimss.sub"  # has typo
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withUsernameExpression("'k8s-' + claimss.sub").
+					build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.NoError(t, errorToCheck)
@@ -1334,28 +1058,13 @@ jwt:
 		{
 			name: "old valid config to new valid empty config (should cause tokens to stop working)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, _, _ string) string {
-				return `
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-`
+				return newEmptyAuthConfig().build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.NoError(t, errorToCheck)
@@ -1378,39 +1087,17 @@ kind: AuthenticationConfiguration
 		{
 			name: "old valid config to new valid config with typo (should be ignored)",
 			authConfigFn: func(t *testing.T, issuerURL, caCert string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID, indentCertificateAuthority(caCert))
+				return newAuthConfigBuilder(issuerURL, caCert).
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					build()
 			},
 			newAuthConfigFn: func(t *testing.T, issuerURL, _ string) string {
-				return fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - %s
-    - another-audience
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: ""  # missing CA
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, issuerURL, defaultOIDCClientID)
+				return newAuthConfigBuilder(issuerURL, "").
+					withAudiences(defaultOIDCClientID, "another-audience").
+					withAudienceMatchPolicy("MatchAny").
+					withEmptyCertificateAuthority().
+					build()
 			},
 			assertErrFn: func(t *testing.T, errorToCheck error) {
 				assert.NoError(t, errorToCheck)
@@ -1568,25 +1255,12 @@ func TestStructuredAuthenticationDiscoveryURL(t *testing.T) {
 			oidcServer := utilsoidc.BuildAndRunTestServer(t, caFilePath, caKeyFilePath, tt.issuerURL)
 			discoveryURL := strings.TrimSuffix(tt.discoveryURL(oidcServer.URL()), "/") + "/.well-known/openid-configuration"
 
-			authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    discoveryURL: %s
-    audiences:
-    - foo
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-  claimValidationRules:
-  - expression: 'claims.hd == "example.com"'
-    message: "the hd claim must be set to example.com"
-`, tt.issuerURL, discoveryURL, indentCertificateAuthority(string(caCertContent)))
+			authenticationConfig := newAuthConfigBuilder(tt.issuerURL, string(caCertContent)).
+withAudiences("foo").
+withAudienceMatchPolicy("MatchAny").
+withDiscoveryURL(discoveryURL).
+withClaimValidationRule(`claims.hd == "example.com"`, "the hd claim must be set to example.com").
+build()
 
 			oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey)).Maybe()
 
@@ -1636,39 +1310,18 @@ func TestMultipleJWTAuthenticators(t *testing.T) {
 	signingPrivateKey2, publicKey2 := rsaGenerateKey(t)
 	oidcServer2 := utilsoidc.BuildAndRunTestServer(t, caFilePath2, caKeyFilePath2, "https://example.com")
 
-	authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - foo
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-  claimValidationRules:
-  - expression: 'claims.hd == "example.com"'
-    message: "the hd claim must be set to example.com"
-- issuer:
-    url: "https://example.com"
-    discoveryURL: %s/.well-known/openid-configuration
-    audiences:
-    - bar
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-    groups:
-      expression: '(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "system:" + role)'
-    uid:
-      expression: "claims.uid"
-`, oidcServer1.URL(), indentCertificateAuthority(string(caCertContent1)), oidcServer2.URL(), indentCertificateAuthority(string(caCertContent2)))
+	authenticationConfig := newMultiIssuerAuthConfig().
+addIssuer(oidcServer1.URL(), string(caCertContent1)).
+withAudiences("foo").
+withAudienceMatchPolicy("MatchAny").
+withClaimValidationRule(`claims.hd == "example.com"`, "the hd claim must be set to example.com").
+addIssuer("https://example.com", string(caCertContent2)).
+withDiscoveryURL(oidcServer2.URL() + "/.well-known/openid-configuration").
+withAudiences("bar").
+withAudienceMatchPolicy("MatchAny").
+withGroupsExpression(`(claims.roles.split(",") + claims.other_roles.split(",")).map(role, "system:" + role)`).
+withUIDExpression("claims.uid").
+build()
 
 	oidcServer1.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey1)).Maybe()
 	oidcServer2.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey2)).Maybe()
@@ -1775,31 +1428,14 @@ func TestJWKSMetricsCleanupOnIssuerRemoval(t *testing.T) {
 	signingPrivateKey2, publicKey2 := rsaGenerateKey(t)
 	oidcServer2 := utilsoidc.BuildAndRunTestServer(t, caFilePath2, caKeyFilePath2, "")
 
-	authenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - foo
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-- issuer:
-    url: %s
-    audiences:
-    - bar
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, oidcServer1.URL(), indentCertificateAuthority(string(caCertContent1)), oidcServer2.URL(), indentCertificateAuthority(string(caCertContent2)))
+	authenticationConfig := newMultiIssuerAuthConfig().
+addIssuer(oidcServer1.URL(), string(caCertContent1)).
+withAudiences("foo").
+withAudienceMatchPolicy("MatchAny").
+addIssuer(oidcServer2.URL(), string(caCertContent2)).
+withAudiences("bar").
+withAudienceMatchPolicy("MatchAny").
+build()
 
 	oidcServer1.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey1)).Maybe()
 	oidcServer2.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey2)).Maybe()
@@ -1873,21 +1509,10 @@ jwt:
 	}
 
 	// Now update the config to only have ONE issuer (remove issuer 2)
-	newAuthenticationConfig := fmt.Sprintf(`
-apiVersion: apiserver.config.k8s.io/v1
-kind: AuthenticationConfiguration
-jwt:
-- issuer:
-    url: %s
-    audiences:
-    - foo
-    audienceMatchPolicy: MatchAny
-    certificateAuthority: |
-        %s
-  claimMappings:
-    username:
-      expression: "'k8s-' + claims.sub"
-`, oidcServer1.URL(), indentCertificateAuthority(string(caCertContent1)))
+	newAuthenticationConfig := newAuthConfigBuilder(oidcServer1.URL(), string(caCertContent1)).
+withAudiences("foo").
+withAudienceMatchPolicy("MatchAny").
+build()
 
 	authConfigFilePath := apiServer.ServerOpts.Authentication.AuthenticationConfigFile
 
