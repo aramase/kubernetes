@@ -60,7 +60,8 @@ func TestOIDC(t *testing.T) {
 t.Log("Testing OIDC authenticator with --oidc-* flags")
 genericapiserver.SetHostnameFuncForTests("testAPIServerID")
 
-rsaTests := []singleTest[*rsa.PrivateKey, *rsa.PublicKey]{
+// Tests that need their own server (custom infrastructure).
+for _, tt := range []singleTest[*rsa.PrivateKey, *rsa.PublicKey]{
 {
 name: "ID token is ok",
 configureInfrastructure: func(t *testing.T, _ authenticationConfigFunc, keyFunc func(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey)) (
@@ -198,16 +199,73 @@ errorToCheck.Error(),
 )
 },
 },
-}
-rsaTests = append(rsaTests, commonRSAOIDCTests()...)
-
-for _, tt := range rsaTests {
+} {
 t.Run(tt.name, singleTestRunner(legacyAuthConfigFn, rsaGenerateKey, tt))
 }
 
+// ECDSA variant.
 for _, tt := range commonECDSAOIDCTests() {
-t.Run(tt.name, singleTestRunner(legacyAuthConfigFn, ecdsaGenerateKey, tt))
+t.Run("ECDSA/"+tt.name, singleTestRunner(legacyAuthConfigFn, ecdsaGenerateKey, tt))
 }
+
+// Tests sharing a single server (only token behavior differs).
+t.Run("shared", func(t *testing.T) {
+t.Parallel()
+oidcServer, apiServer, signingPrivateKey, caCert, caFilePath := configureTestInfrastructure(t, legacyAuthConfigFn, rsaGenerateKey)
+
+tokenURL, err := oidcServer.TokenURL()
+require.NoError(t, err)
+
+t.Run("ID token is expired", func(t *testing.T) {
+configureOIDCServerToReturnExpiredIDToken(t, 2, oidcServer, signingPrivateKey)
+client := configureClientFetchingOIDCCredentials(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+assert.True(t, apierrors.IsUnauthorized(err), err)
+})
+
+t.Run("wrong client ID", func(t *testing.T) {
+oidcServer.TokenHandler().EXPECT().Token().Times(2).Return(handlers.Token{}, utilsoidc.ErrBadClientID)
+client := configureClientWithEmptyIDToken(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+urlError, ok := err.(*url.Error)
+require.True(t, ok)
+assert.Equal(
+t,
+"failed to refresh token: oauth2: cannot fetch token: 400 Bad Request\nResponse: client ID is bad\n",
+urlError.Err.Error(),
+)
+})
+
+t.Run("client has wrong CA", func(t *testing.T) {
+tempDir := t.TempDir()
+wrongCertFilePath := filepath.Join(tempDir, "localhost_127.0.0.1_.crt")
+_, _, err := certutil.GenerateSelfSignedCertKeyWithFixtures("localhost", []net.IP{utilsnet.ParseIPSloppy("127.0.0.1")}, nil, tempDir)
+require.NoError(t, err)
+client := configureClientWithEmptyIDToken(t, apiServer.ClientConfig, caCert, wrongCertFilePath, oidcServer.URL(), tokenURL)
+_, err = client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+expectedErr := new(x509.UnknownAuthorityError)
+assert.ErrorAs(t, err, expectedErr)
+})
+
+t.Run("refresh flow does not return ID Token", func(t *testing.T) {
+configureOIDCServerToReturnExpiredIDToken(t, 1, oidcServer, signingPrivateKey)
+oidcServer.TokenHandler().EXPECT().Token().Times(1).Return(handlers.Token{
+IDToken:      "",
+AccessToken:  defaultStubAccessToken,
+RefreshToken: defaultStubRefreshToken,
+ExpiresIn:    time.Now().Add(time.Second * 1200).Unix(),
+}, nil)
+client := configureClientFetchingOIDCCredentials(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+expectedError := new(apierrors.StatusError)
+require.ErrorAs(t, err, &expectedError)
+assert.Equal(
+t,
+`pods is forbidden: User "system:anonymous" cannot list resource "pods" in API group "" in the namespace "default"`,
+err.Error(),
+)
+})
+})
 }
 
 func TestStructuredAuthenticationConfig(t *testing.T) {
@@ -220,7 +278,8 @@ withUsernameClaim("sub", defaultOIDCUsernamePrefix).
 build()
 })
 
-rsaTests := []singleTest[*rsa.PrivateKey, *rsa.PublicKey]{
+// Tests that need their own server (custom infrastructure).
+for _, tt := range []singleTest[*rsa.PrivateKey, *rsa.PublicKey]{
 {
 name: "ID token is ok",
 configureInfrastructure: func(t *testing.T, _ authenticationConfigFunc, keyFunc func(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey)) (
@@ -357,75 +416,55 @@ assertErrFn: func(t *testing.T, errorToCheck error) {
 assert.True(t, apierrors.IsUnauthorized(errorToCheck), errorToCheck)
 },
 },
-}
-rsaTests = append(rsaTests, commonRSAOIDCTests()...)
-
-for _, tt := range rsaTests {
+} {
 t.Run(tt.name, singleTestRunner(structuredFn, rsaGenerateKey, tt))
 }
 
+// ECDSA variant.
 for _, tt := range commonECDSAOIDCTests() {
-t.Run(tt.name, singleTestRunner(structuredFn, ecdsaGenerateKey, tt))
-}
+t.Run("ECDSA/"+tt.name, singleTestRunner(structuredFn, ecdsaGenerateKey, tt))
 }
 
-// legacyAuthConfigFn signals configureTestInfrastructure to use --oidc-* flags.
-func legacyAuthConfigFn(_ *testing.T, _, _ string) string { return "" }
+// Tests sharing a single server (only token behavior differs).
+t.Run("shared", func(t *testing.T) {
+t.Parallel()
+oidcServer, apiServer, signingPrivateKey, caCert, caFilePath := configureTestInfrastructure(t, structuredFn, rsaGenerateKey)
 
-// commonRSAOIDCTests returns test entries that work identically in both
-// legacy (--oidc-* flags) and structured authentication config modes.
-func commonRSAOIDCTests() []singleTest[*rsa.PrivateKey, *rsa.PublicKey] {
-return []singleTest[*rsa.PrivateKey, *rsa.PublicKey]{
-{
-name:                    "ID token is expired",
-configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
-configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
+tokenURL, err := oidcServer.TokenURL()
+require.NoError(t, err)
+
+t.Run("ID token is expired", func(t *testing.T) {
 configureOIDCServerToReturnExpiredIDToken(t, 2, oidcServer, signingPrivateKey)
-},
-configureClient: configureClientFetchingOIDCCredentials,
-assertErrFn: func(t *testing.T, errorToCheck error) {
-assert.True(t, apierrors.IsUnauthorized(errorToCheck), errorToCheck)
-},
-},
-{
-name:                    "wrong client ID",
-configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
-configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, _ *rsa.PrivateKey) {
+client := configureClientFetchingOIDCCredentials(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+assert.True(t, apierrors.IsUnauthorized(err), err)
+})
+
+t.Run("wrong client ID", func(t *testing.T) {
 oidcServer.TokenHandler().EXPECT().Token().Times(2).Return(handlers.Token{}, utilsoidc.ErrBadClientID)
-},
-configureClient: configureClientWithEmptyIDToken,
-assertErrFn: func(t *testing.T, errorToCheck error) {
-urlError, ok := errorToCheck.(*url.Error)
+client := configureClientWithEmptyIDToken(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
+urlError, ok := err.(*url.Error)
 require.True(t, ok)
 assert.Equal(
 t,
 "failed to refresh token: oauth2: cannot fetch token: 400 Bad Request\nResponse: client ID is bad\n",
 urlError.Err.Error(),
 )
-},
-},
-{
-name:                         "client has wrong CA",
-configureInfrastructure:      configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
-configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, _ *rsa.PrivateKey) {},
-configureClient: func(t *testing.T, restCfg *rest.Config, caCert []byte, _, oidcServerURL, oidcServerTokenURL string) kubernetes.Interface {
+})
+
+t.Run("client has wrong CA", func(t *testing.T) {
 tempDir := t.TempDir()
-certFilePath := filepath.Join(tempDir, "localhost_127.0.0.1_.crt")
-
-_, _, wantErr := certutil.GenerateSelfSignedCertKeyWithFixtures("localhost", []net.IP{utilsnet.ParseIPSloppy("127.0.0.1")}, nil, tempDir)
-require.NoError(t, wantErr)
-
-return configureClientWithEmptyIDToken(t, restCfg, caCert, certFilePath, oidcServerURL, oidcServerTokenURL)
-},
-assertErrFn: func(t *testing.T, errorToCheck error) {
+wrongCertFilePath := filepath.Join(tempDir, "localhost_127.0.0.1_.crt")
+_, _, err := certutil.GenerateSelfSignedCertKeyWithFixtures("localhost", []net.IP{utilsnet.ParseIPSloppy("127.0.0.1")}, nil, tempDir)
+require.NoError(t, err)
+client := configureClientWithEmptyIDToken(t, apiServer.ClientConfig, caCert, wrongCertFilePath, oidcServer.URL(), tokenURL)
+_, err = client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
 expectedErr := new(x509.UnknownAuthorityError)
-assert.ErrorAs(t, errorToCheck, expectedErr)
-},
-},
-{
-name:                    "refresh flow does not return ID Token",
-configureInfrastructure: configureTestInfrastructure[*rsa.PrivateKey, *rsa.PublicKey],
-configureOIDCServerBehaviour: func(t *testing.T, oidcServer *utilsoidc.TestServer, signingPrivateKey *rsa.PrivateKey) {
+assert.ErrorAs(t, err, expectedErr)
+})
+
+t.Run("refresh flow does not return ID Token", func(t *testing.T) {
 configureOIDCServerToReturnExpiredIDToken(t, 1, oidcServer, signingPrivateKey)
 oidcServer.TokenHandler().EXPECT().Token().Times(1).Return(handlers.Token{
 IDToken:      "",
@@ -433,20 +472,22 @@ AccessToken:  defaultStubAccessToken,
 RefreshToken: defaultStubRefreshToken,
 ExpiresIn:    time.Now().Add(time.Second * 1200).Unix(),
 }, nil)
-},
-configureClient: configureClientFetchingOIDCCredentials,
-assertErrFn: func(t *testing.T, errorToCheck error) {
+client := configureClientFetchingOIDCCredentials(t, apiServer.ClientConfig, caCert, caFilePath, oidcServer.URL(), tokenURL)
+_, err := client.CoreV1().Pods(defaultNamespace).List(testContext(t), metav1.ListOptions{})
 expectedError := new(apierrors.StatusError)
-require.ErrorAs(t, errorToCheck, &expectedError)
+require.ErrorAs(t, err, &expectedError)
 assert.Equal(
 t,
 `pods is forbidden: User "system:anonymous" cannot list resource "pods" in API group "" in the namespace "default"`,
-errorToCheck.Error(),
+err.Error(),
 )
-},
-},
+})
+})
 }
-}
+
+// legacyAuthConfigFn signals configureTestInfrastructure to use --oidc-* flags.
+func legacyAuthConfigFn(_ *testing.T, _, _ string) string { return "" }
+
 
 // commonECDSAOIDCTests returns ECDSA test entries that work identically in both modes.
 func commonECDSAOIDCTests() []singleTest[*ecdsa.PrivateKey, *ecdsa.PublicKey] {
