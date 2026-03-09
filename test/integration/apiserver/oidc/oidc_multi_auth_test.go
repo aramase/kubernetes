@@ -71,8 +71,8 @@ func TestMultipleJWTAuthenticators(t *testing.T) {
 		withUIDExpression("claims.uid").
 		build()
 
-	oidcServer1.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey1)).Maybe()
-	oidcServer2.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey2)).Maybe()
+	oidcServer1.SetPublicKey(t, publicKey1)
+	oidcServer2.SetPublicKey(t, publicKey2)
 
 	apiServer := startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, publicKey1)
 
@@ -185,8 +185,8 @@ func TestJWKSMetricsCleanupOnIssuerRemoval(t *testing.T) {
 		withAudienceMatchPolicy("MatchAny").
 		build()
 
-	oidcServer1.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey1)).Maybe()
-	oidcServer2.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey2)).Maybe()
+	oidcServer1.SetPublicKey(t, publicKey1)
+	oidcServer2.SetPublicKey(t, publicKey2)
 
 	apiServer := startTestAPIServerForOIDC(t, apiServerOIDCConfig{
 		authenticationConfigYAML: authenticationConfig,

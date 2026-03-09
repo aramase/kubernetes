@@ -181,7 +181,7 @@ func configureTestInfrastructureAndEgressProxy[K utilsoidc.JosePrivateKey, L uti
 		apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{oidcURL: oidcServer.URL(), oidcClientID: defaultOIDCClientID, oidcCAFilePath: caFilePath, oidcUsernamePrefix: defaultOIDCUsernamePrefix}, publicKey)
 	}
 
-	oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey)).Maybe()
+	oidcServer.SetPublicKey(t, publicKey)
 
 	adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
 	configureRBAC(t, adminClient, defaultRole, defaultRoleBinding)

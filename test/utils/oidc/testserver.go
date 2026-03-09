@@ -29,6 +29,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,12 +52,35 @@ var (
 type TestServer struct {
 	httpServer   *httptest.Server
 	tokenHandler *handlers.MockTokenHandler
-	jwksHandler  *handlers.MockJWKsHandler
+
+	mu         sync.RWMutex
+	publicKeys []jose.JSONWebKey
 }
 
-// JwksHandler is getter of JSON Web Key Sets handler
-func (ts *TestServer) JwksHandler() *handlers.MockJWKsHandler {
-	return ts.jwksHandler
+// SetPublicKey configures the JWKS endpoint to serve the given public key.
+func (ts *TestServer) SetPublicKey(t *testing.T, publicKey crypto.PublicKey) {
+	t.Helper()
+
+	var alg string
+	switch publicKey.(type) {
+	case *rsa.PublicKey:
+		alg = string(jose.RS256)
+	case *ecdsa.PublicKey:
+		alg = string(jose.ES256)
+	default:
+		t.Fatalf("unsupported public key type: %T", publicKey)
+	}
+
+	key := jose.JSONWebKey{Key: publicKey, Use: "sig", Algorithm: alg}
+
+	thumbprint, err := key.Thumbprint(crypto.SHA256)
+	require.NoError(t, err)
+
+	key.KeyID = hex.EncodeToString(thumbprint)
+
+	ts.mu.Lock()
+	ts.publicKeys = []jose.JSONWebKey{key}
+	ts.mu.Unlock()
 }
 
 // TokenHandler is getter of JWT token handler
@@ -105,7 +129,6 @@ func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath, issuerOverride strin
 	oidcServer := &TestServer{
 		httpServer:   httpServer,
 		tokenHandler: handlers.NewMockTokenHandler(t),
-		jwksHandler:  handlers.NewMockJWKsHandler(t),
 	}
 
 	issuer := httpServer.URL
@@ -146,7 +169,9 @@ func BuildAndRunTestServer(t *testing.T, caPath, caKeyPath, issuerOverride strin
 	})
 
 	mux.HandleFunc(jwksWebPath, func(writer http.ResponseWriter, request *http.Request) {
-		keySet := oidcServer.jwksHandler.KeySet()
+		oidcServer.mu.RLock()
+		keySet := jose.JSONWebKeySet{Keys: oidcServer.publicKeys}
+		oidcServer.mu.RUnlock()
 
 		writer.Header().Add("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
@@ -192,6 +217,52 @@ type JosePrivateKey interface {
 	*rsa.PrivateKey | *ecdsa.PrivateKey
 }
 
+// SignToken creates a signed compact JWT string from the given private key and claims.
+func SignToken[K JosePrivateKey](t *testing.T, privateKey K, claims map[string]interface{}) string {
+	t.Helper()
+
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: GetSignatureAlgorithm(privateKey), Key: privateKey}, nil)
+	require.NoError(t, err)
+
+	payloadJSON, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	jws, err := signer.Sign(payloadJSON)
+	require.NoError(t, err)
+
+	token, err := jws.CompactSerialize()
+	require.NoError(t, err)
+
+	return token
+}
+
+// SetNextTokenResponse configures the token mock to return a signed JWT with
+// the given claims once. For error scenarios or custom call counts, use
+// TokenHandler() directly.
+func (ts *TestServer) SetNextTokenResponse(t *testing.T, privateKey crypto.PrivateKey, claims map[string]interface{}, accessToken, refreshToken string) {
+	t.Helper()
+
+	var idToken string
+	switch k := privateKey.(type) {
+	case *rsa.PrivateKey:
+		idToken = SignToken(t, k, claims)
+	case *ecdsa.PrivateKey:
+		idToken = SignToken(t, k, claims)
+	default:
+		t.Fatalf("unsupported private key type: %T", privateKey)
+	}
+
+	ts.tokenHandler.EXPECT().Token().RunAndReturn(func() (handlers.Token, error) {
+		return handlers.Token{
+			IDToken:      idToken,
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+		}, nil
+	}).Times(1)
+}
+
+// Deprecated: Use SignToken and configure the token mock directly via TokenHandler().
+//
 // TokenHandlerBehaviorReturningPredefinedJWT describes the scenario when signed JWT token is being created.
 // This behavior should being applied to the MockTokenHandler.
 func TokenHandlerBehaviorReturningPredefinedJWT[K JosePrivateKey](
@@ -202,19 +273,8 @@ func TokenHandlerBehaviorReturningPredefinedJWT[K JosePrivateKey](
 	t.Helper()
 
 	return func() (handlers.Token, error) {
-		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: GetSignatureAlgorithm(privateKey), Key: privateKey}, nil)
-		require.NoError(t, err)
-
-		payloadJSON, err := json.Marshal(claims)
-		require.NoError(t, err)
-
-		idTokenSignature, err := signer.Sign(payloadJSON)
-		require.NoError(t, err)
-		idToken, err := idTokenSignature.CompactSerialize()
-		require.NoError(t, err)
-
 		return handlers.Token{
-			IDToken:      idToken,
+			IDToken:      SignToken(t, privateKey, claims),
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
 		}, nil
@@ -223,24 +283,6 @@ func TokenHandlerBehaviorReturningPredefinedJWT[K JosePrivateKey](
 
 type JosePublicKey interface {
 	*rsa.PublicKey | *ecdsa.PublicKey
-}
-
-// DefaultJwksHandlerBehavior describes the scenario when JSON Web Key Set token is being returned.
-// This behavior should being applied to the MockJWKsHandler.
-func DefaultJwksHandlerBehavior[K JosePublicKey](t *testing.T, verificationPublicKey K) func() jose.JSONWebKeySet {
-	t.Helper()
-
-	return func() jose.JSONWebKeySet {
-		key := jose.JSONWebKey{Key: verificationPublicKey, Use: "sig", Algorithm: string(GetSignatureAlgorithm(verificationPublicKey))}
-
-		thumbprint, err := key.Thumbprint(crypto.SHA256)
-		require.NoError(t, err)
-
-		key.KeyID = hex.EncodeToString(thumbprint)
-		return jose.JSONWebKeySet{
-			Keys: []jose.JSONWebKey{key},
-		}
-	}
 }
 
 type JoseKey interface{ JosePrivateKey | JosePublicKey }

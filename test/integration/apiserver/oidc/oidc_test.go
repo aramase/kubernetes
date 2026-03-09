@@ -62,7 +62,7 @@ func TestOIDC(t *testing.T) {
 
 				apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{oidcURL: oidcServer.URL(), oidcClientID: defaultOIDCClientID,
 					oidcCAFilePath: caFilePath, oidcUsernamePrefix: defaultOIDCUsernamePrefix, oidcUsernameClaim: "user"}, &signingPrivateKey.PublicKey)
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey)).Maybe()
+				oidcServer.SetPublicKey(t, publicKey)
 
 				adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
 				configureRBAC(t, adminClient, defaultRole, defaultRoleBinding)
@@ -112,7 +112,7 @@ func TestOIDC(t *testing.T) {
 
 				anotherSigningPrivateKey, _ := keyFunc(t)
 
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, &anotherSigningPrivateKey.PublicKey)).Maybe()
+				oidcServer.SetPublicKey(t, &anotherSigningPrivateKey.PublicKey)
 
 				return oidcServer, apiServer, signingPrivateKey, caCertContent, caFilePath
 			},
@@ -155,7 +155,7 @@ func TestOIDC(t *testing.T) {
 				},
 					&signingPrivateKey.PublicKey)
 
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, &signingPrivateKey.PublicKey)).Maybe()
+				oidcServer.SetPublicKey(t, &signingPrivateKey.PublicKey)
 
 				return oidcServer, apiServer, signingPrivateKey, caCertContent, caFilePath
 			},
@@ -296,7 +296,7 @@ func TestStructuredAuthenticationConfig(t *testing.T) {
 					withUsernameClaim("user", defaultOIDCUsernamePrefix).
 					build()
 				apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, &signingPrivateKey.PublicKey)
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey)).Maybe()
+				oidcServer.SetPublicKey(t, publicKey)
 
 				adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
 				configureRBAC(t, adminClient, defaultRole, defaultRoleBinding)
@@ -349,7 +349,7 @@ func TestStructuredAuthenticationConfig(t *testing.T) {
 
 				anotherSigningPrivateKey, _ := keyFunc(t)
 
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, &anotherSigningPrivateKey.PublicKey)).Maybe()
+				oidcServer.SetPublicKey(t, &anotherSigningPrivateKey.PublicKey)
 
 				return oidcServer, apiServer, signingPrivateKey, caCertContent, caFilePath
 			},
@@ -392,7 +392,7 @@ func TestStructuredAuthenticationConfig(t *testing.T) {
 					build()
 				apiServer = startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, &signingPrivateKey.PublicKey)
 
-				oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, &signingPrivateKey.PublicKey)).Maybe()
+				oidcServer.SetPublicKey(t, &signingPrivateKey.PublicKey)
 
 				return oidcServer, apiServer, signingPrivateKey, caCertContent, caFilePath
 			},

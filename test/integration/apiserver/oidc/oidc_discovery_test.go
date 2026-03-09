@@ -80,7 +80,7 @@ func TestStructuredAuthenticationDiscoveryURL(t *testing.T) {
 				withClaimValidationRule(`claims.hd == "example.com"`, "the hd claim must be set to example.com").
 				build()
 
-			oidcServer.JwksHandler().EXPECT().KeySet().RunAndReturn(utilsoidc.DefaultJwksHandlerBehavior(t, publicKey)).Maybe()
+			oidcServer.SetPublicKey(t, publicKey)
 
 			apiServer := startTestAPIServerForOIDC(t, apiServerOIDCConfig{authenticationConfigYAML: authenticationConfig}, publicKey)
 
