@@ -885,9 +885,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 				Groups:   []string{"system:authenticated"},
 			},
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_new_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_new_config_hash"} 1`,
 			},
 		},
 		{
@@ -946,9 +946,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 				Groups:   []string{"system:authenticated"},
 			},
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_new_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_new_config_hash"} 1`,
 			},
 		},
 		{
@@ -981,9 +981,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 				Groups:   []string{"system:authenticated"},
 			},
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_new_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_new_config_hash"} 1`,
 			},
 		},
 		{
@@ -1014,9 +1014,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 				Groups:   []string{"system:authenticated"},
 			},
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_new_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_new_config_hash"} 1`,
 			},
 		},
 		{
@@ -1050,9 +1050,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 			},
 			waitAfterConfigSwap: true,
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_old_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="failure"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="failure"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_old_config_hash"} 1`,
 			},
 		},
 		{
@@ -1079,9 +1079,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 			newWantUser:         nil,
 			waitAfterConfigSwap: true,
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="success"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_new_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="success"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_new_config_hash"} 1`,
 			},
 		},
 		{
@@ -1115,9 +1115,9 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 			},
 			waitAfterConfigSwap: true,
 			wantMetricStrings: []string{
-				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} FP`,
-				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",status="failure"} 1`,
-				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="replace_with_old_config_hash"} 1`,
+				`apiserver_authentication_config_controller_automatic_reload_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",status="failure"} FP`,
+				`apiserver_authentication_config_controller_automatic_reloads_total{apiserver_id_hash="` + testAPIServerIDHash + `",status="failure"} 1`,
+				`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="replace_with_old_config_hash"} 1`,
 			},
 		},
 	}
@@ -1391,10 +1391,10 @@ build()
 	keySetHash2 := fetchJWKSAndComputeHash(t, oidcServer2.URL(), caCertContent2)
 
 	wantMetricStrings := []string{
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash2, jwtIssuerHash2),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash2),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash2, jwtIssuerHash2),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash2),
 	}
 	adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
 	gotMetricStrings := getMetrics(t, ctx, adminClient, "apiserver_authentication_jwt_authenticator_jwks_")
@@ -1496,10 +1496,10 @@ build()
 
 	// Check that metrics exist for both the issuers with correct jwt_issuer_hash + hash combos
 	wantMetricStrings := []string{
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash2, jwtIssuerHash2),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash2),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash2, jwtIssuerHash2),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash2),
 	}
 	gotMetricStrings := getMetrics(t, ctx, adminClient, "apiserver_authentication_jwt_authenticator_jwks_")
 
@@ -1536,15 +1536,15 @@ build()
 		}
 
 		metricsStr := string(body)
-		expectedConfigHashMetric := fmt.Sprintf(`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s"} 1`, newAuthConfigHash)
+		expectedConfigHashMetric := fmt.Sprintf(`apiserver_authentication_config_controller_last_config_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s"} 1`, newAuthConfigHash)
 		return strings.Contains(metricsStr, expectedConfigHashMetric), nil
 	})
 	require.NoError(t, err, "config reload not detected")
 
 	// Wait for metric cleanup by polling until issuer 2 metrics are removed
 	wantMetricStringsAfterReload := []string{
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
-		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="sha256:3c607df3b2bf22c9d9f01d5314b4bbf411c48ef43ff44ff29b1d55b41367c795",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_key_set_info{apiserver_id_hash="` + testAPIServerIDHash + `",hash="%s",jwt_issuer_hash="%s"} 1`, keySetHash1, jwtIssuerHash1),
+		fmt.Sprintf(`apiserver_authentication_jwt_authenticator_jwks_fetch_last_timestamp_seconds{apiserver_id_hash="` + testAPIServerIDHash + `",jwt_issuer_hash="%s",result="success"} FP`, jwtIssuerHash1),
 	}
 	slices.Sort(wantMetricStringsAfterReload)
 
