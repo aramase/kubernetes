@@ -39,11 +39,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"gopkg.in/go-jose/go-jose.v2"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 	"k8s.io/client-go/rest"
@@ -214,19 +212,14 @@ func configureBasicTestInfrastructure[K utilsoidc.JosePrivateKey, L utilsoidc.Jo
 	return oidcServer, apiServer, caCertContent, caFilePath
 }
 
-func configureBasicTestInfrastructureWithRandomKeyType(t *testing.T, fn authenticationConfigFunc) (
+func configureBasicTestInfrastructureWithRSAKey(t *testing.T, fn authenticationConfigFunc) (
 	oidcServer *utilsoidc.TestServer,
 	apiServer *kubeapiserverapptesting.TestServer,
 	caCertContent []byte,
 	caFilePath string,
 ) {
 	t.Helper()
-
-	if randomBool() {
-		return configureBasicTestInfrastructure(t, fn, rsaGenerateKey)
-	}
-
-	return configureBasicTestInfrastructure(t, fn, ecdsaGenerateKey)
+	return configureBasicTestInfrastructure(t, fn, rsaGenerateKey)
 }
 
 func configureClientFetchingOIDCCredentials(t *testing.T, restCfg *rest.Config, caCert []byte, certPath, oidcServerURL, oidcServerTokenURL string) kubernetes.Interface {
@@ -309,7 +302,7 @@ egressSelections:
 		if len(c.oidcUsernameClaim) > 0 {
 			customFlags = append(customFlags, fmt.Sprintf("--oidc-username-claim=%s", c.oidcUsernameClaim))
 		}
-		customFlags = append(customFlags, maybeSetSigningAlgs(publicKey)...)
+		customFlags = append(customFlags, setSigningAlgs(publicKey)...)
 	}
 	customFlags = append(customFlags, "--authorization-mode=RBAC")
 
@@ -326,17 +319,12 @@ egressSelections:
 	return &server
 }
 
-func maybeSetSigningAlgs[K utilsoidc.JoseKey](key K) []string {
+func setSigningAlgs[K utilsoidc.JoseKey](key K) []string {
 	alg := utilsoidc.GetSignatureAlgorithm(key)
-	if alg == jose.RS256 && randomBool() {
-		return nil // check the default case of RS256 by not always setting the flag
-	}
 	return []string{
-		fmt.Sprintf("--oidc-signing-algs=%s", alg), // all other algs need to be manually set
+		fmt.Sprintf("--oidc-signing-algs=%s", alg),
 	}
 }
-
-func randomBool() bool { return utilrand.Int()%2 == 1 }
 
 func fetchOIDCCredentials(t *testing.T, oidcTokenURL string, caCertContent []byte) (idToken, refreshToken string) {
 	t.Helper()

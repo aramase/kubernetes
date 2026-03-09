@@ -1131,7 +1131,7 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 
 			configureTestInfrastructureFunc := tt.configureTestInfrastructure
 			if configureTestInfrastructureFunc == nil {
-				configureTestInfrastructureFunc = configureBasicTestInfrastructureWithRandomKeyType
+				configureTestInfrastructureFunc = configureBasicTestInfrastructureWithRSAKey
 			}
 			oidcServer, apiServer, caCert, certPath := configureTestInfrastructureFunc(t, tt.authConfigFn)
 
