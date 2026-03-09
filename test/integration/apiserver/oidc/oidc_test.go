@@ -1340,7 +1340,16 @@ func TestStructuredAuthenticationConfigReload(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.waitAfterConfigSwap {
-				time.Sleep(options.UpdateAuthenticationConfigTimeout + hardCodedTokenCacheTTLAndPollInterval) // has to be longer than UpdateAuthenticationConfigTimeout
+				// Poll until the reload controller has processed the config change,
+				// rather than sleeping unconditionally.
+				adminClient := kubernetes.NewForConfigOrDie(apiServer.ClientConfig)
+				err = wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, options.UpdateAuthenticationConfigTimeout+hardCodedTokenCacheTTLAndPollInterval, true, func(ctx context.Context) (done bool, err error) {
+					gotMetricStrings := getMetrics(t, ctx, adminClient, "apiserver_authentication_config_controller_automatic_reloads_total")
+					return len(gotMetricStrings) > 0, nil
+				})
+				if err != nil {
+					t.Logf("timed out waiting for config reload attempt: %v", err)
+				}
 			}
 
 			if tt.newWantUser != nil {
