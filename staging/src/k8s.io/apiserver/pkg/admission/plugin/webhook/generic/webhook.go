@@ -30,6 +30,7 @@ import (
 	v1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	genericadmissioninit "k8s.io/apiserver/pkg/admission/initializer"
 	admissionmetrics "k8s.io/apiserver/pkg/admission/metrics"
@@ -77,16 +78,20 @@ type Webhook struct {
 	dispatcher        Dispatcher
 	filterCompiler    cel.ConditionCompiler
 	authorizer        authorizer.UnconditionalAuthorizer
+	// excludedResources are non-persisted resources (auth/authz reviews) that must be
+	// excluded from ALL webhook evaluation, including static webhooks.
+	excludedResources sets.Set[schema.GroupResource]
 
 	// Lifecycle.
 	stopCh <-chan struct{}
 }
 
 var (
-	_ genericadmissioninit.WantsExternalKubeClientSet = &Webhook{}
-	_ genericadmissioninit.WantsDrainedNotification   = &Webhook{}
-	_ genericadmissioninit.WantsAPIServerID           = &Webhook{}
-	_ admission.Interface                             = &Webhook{}
+	_ genericadmissioninit.WantsExternalKubeClientSet      = &Webhook{}
+	_ genericadmissioninit.WantsDrainedNotification        = &Webhook{}
+	_ genericadmissioninit.WantsAPIServerID                = &Webhook{}
+	_ genericadmissioninit.WantsExcludedAdmissionResources = &Webhook{}
+	_ admission.Interface                                  = &Webhook{}
 )
 
 type sourceFactory func(f informers.SharedInformerFactory) Source
@@ -140,6 +145,7 @@ func NewWebhook(handler *admission.Handler, configFile io.Reader, sourceFactory 
 		objectMatcher:      &object.Matcher{},
 		dispatcher:         dispatcherFactory(&cm),
 		filterCompiler:     cel.NewConditionCompiler(environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())),
+		excludedResources:  sets.New[schema.GroupResource](),
 	}, nil
 }
 
@@ -197,6 +203,10 @@ func (a *Webhook) SetExternalKubeInformerFactory(f informers.SharedInformerFacto
 
 func (a *Webhook) SetUnconditionalAuthorizer(authorizer authorizer.UnconditionalAuthorizer) {
 	a.authorizer = authorizer
+}
+
+func (a *Webhook) SetExcludedAdmissionResources(excludedResources []schema.GroupResource) {
+	a.excludedResources.Insert(excludedResources...)
 }
 
 // ValidateInitialization implements the InitializationValidator interface.
@@ -355,6 +365,10 @@ func (a *attrWithResourceOverride) GetResource() schema.GroupVersionResource { r
 
 // Dispatch is called by the downstream Validate or Admit methods.
 func (a *Webhook) Dispatch(ctx context.Context, attr admission.Attributes, o admission.ObjectInterfaces) error {
+	if utilfeature.DefaultFeatureGate.Enabled(features.ExcludeAdmissionWebhookVirtualResources) &&
+		a.excludedResources.Has(attr.GetResource().GroupResource()) {
+		return nil
+	}
 	if rules.IsExemptAdmissionConfigurationResource(attr) {
 		// Admission config resources are excluded from API-based webhooks to
 		// prevent circular dependencies. However, static (manifest-based) webhooks

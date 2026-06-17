@@ -20,17 +20,31 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/admission"
+	admissioninitializer "k8s.io/apiserver/pkg/admission/initializer"
 	admissionmetrics "k8s.io/apiserver/pkg/admission/metrics"
+	"k8s.io/apiserver/pkg/admission/plugin/webhook"
+	"k8s.io/apiserver/pkg/admission/plugin/webhook/generic"
 	webhooktesting "k8s.io/apiserver/pkg/admission/plugin/webhook/testing"
 	auditinternal "k8s.io/apiserver/pkg/apis/audit"
+	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/features"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/component-base/metrics/testutil"
+	controlplaneadmission "k8s.io/kubernetes/pkg/controlplane/apiserver/admission"
 	clocktesting "k8s.io/utils/clock/testing"
 )
 
@@ -362,3 +376,147 @@ func TestValidatePanicHandling(t *testing.T) {
 		}
 	}
 }
+
+func TestValidatingWebhookExcludedAdmissionResourcesInitializer(t *testing.T) {
+	testCases := []struct {
+		name              string
+		initializeExclude bool
+		expectCalls       int32
+	}{
+		{
+			name:              "without initializer dispatches",
+			initializeExclude: false,
+			expectCalls:       1,
+		},
+		{
+			name:              "initializer wires excluded resources",
+			initializeExclude: true,
+			expectCalls:       0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, true)
+			wh, dispatcher := newValidatingExcludedResourceWebhook(t)
+			if tc.initializeExclude {
+				controlplaneadmission.NewPluginInitializer(nil, []schema.GroupResource{{Group: "authentication.k8s.io", Resource: "tokenreviews"}}).Initialize(wh)
+			}
+
+			err := wh.Validate(context.Background(), newTokenReviewAttributes(), newExcludedResourceObjectInterfaces())
+			if err != nil {
+				t.Fatalf("Validate() returned error: %v", err)
+			}
+			if got := dispatcher.calls; got != tc.expectCalls {
+				t.Fatalf("unexpected webhook dispatch count: got %d, want %d", got, tc.expectCalls)
+			}
+		})
+	}
+}
+
+func TestValidatingWebhookExcludedAdmissionResourcesSkipsDispatchWhenGateEnabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, true)
+	wh, dispatcher := newValidatingExcludedResourceWebhook(t)
+
+	wants, ok := any(wh).(admissioninitializer.WantsExcludedAdmissionResources)
+	if !ok {
+		t.Fatal("validating webhook should implement WantsExcludedAdmissionResources")
+	}
+	wants.SetExcludedAdmissionResources([]schema.GroupResource{{Group: "authentication.k8s.io", Resource: "tokenreviews"}})
+
+	err := wh.Validate(context.Background(), newTokenReviewAttributes(), newExcludedResourceObjectInterfaces())
+	if err != nil {
+		t.Fatalf("Validate() returned error: %v", err)
+	}
+	if got := dispatcher.calls; got != 0 {
+		t.Fatalf("expected excluded resource to skip dispatch, got %d webhook calls", got)
+	}
+}
+
+func TestValidatingWebhookExcludedAdmissionResourcesDispatchesWhenGateDisabled(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, false)
+	wh, dispatcher := newValidatingExcludedResourceWebhook(t)
+
+	wants, ok := any(wh).(admissioninitializer.WantsExcludedAdmissionResources)
+	if !ok {
+		t.Fatal("validating webhook should implement WantsExcludedAdmissionResources")
+	}
+	wants.SetExcludedAdmissionResources([]schema.GroupResource{{Group: "authentication.k8s.io", Resource: "tokenreviews"}})
+
+	err := wh.Validate(context.Background(), newTokenReviewAttributes(), newExcludedResourceObjectInterfaces())
+	if err != nil {
+		t.Fatalf("Validate() returned error: %v", err)
+	}
+	if got := dispatcher.calls; got != 1 {
+		t.Fatalf("expected excluded resource to dispatch when gate is disabled, got %d webhook calls", got)
+	}
+}
+
+func newValidatingExcludedResourceWebhook(t *testing.T) (*Plugin, *countingValidatingDispatcher) {
+	t.Helper()
+
+	wh, err := NewValidatingAdmissionWebhook(nil)
+	if err != nil {
+		t.Fatalf("failed to create validating webhook: %v", err)
+	}
+
+	dispatcher := &countingValidatingDispatcher{}
+	wh.SetReadyFunc(func() bool { return true })
+	setGenericWebhookField(t, wh.Webhook, "dispatcher", dispatcher)
+	setGenericWebhookField(t, wh.Webhook, "hookSource", &countingValidatingSource{})
+
+	return wh, dispatcher
+}
+
+func newTokenReviewAttributes() admission.Attributes {
+	tokenReview := &authenticationv1.TokenReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: authenticationv1.SchemeGroupVersion.String(),
+			Kind:       "TokenReview",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "tokenreview"},
+		Spec: authenticationv1.TokenReviewSpec{
+			Token:     "test-token",
+			Audiences: []string{"test-audience"},
+		},
+	}
+
+	return admission.NewAttributesRecord(
+		tokenReview,
+		nil,
+		authenticationv1.SchemeGroupVersion.WithKind("TokenReview"),
+		"",
+		tokenReview.Name,
+		authenticationv1.SchemeGroupVersion.WithResource("tokenreviews"),
+		"",
+		admission.Create,
+		&metav1.CreateOptions{},
+		false,
+		&user.DefaultInfo{Name: "webhook-test", UID: "webhook-test"},
+	)
+}
+
+func newExcludedResourceObjectInterfaces() admission.ObjectInterfaces {
+	return nil
+}
+
+func setGenericWebhookField(t *testing.T, genericWebhook *generic.Webhook, fieldName string, value any) {
+	t.Helper()
+
+	field := reflect.ValueOf(genericWebhook).Elem().FieldByName(fieldName)
+	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
+}
+
+type countingValidatingDispatcher struct {
+	calls int32
+}
+
+func (d *countingValidatingDispatcher) Dispatch(_ context.Context, _ admission.Attributes, _ admission.ObjectInterfaces, _ []webhook.WebhookAccessor) error {
+	d.calls++
+	return nil
+}
+
+type countingValidatingSource struct{}
+
+func (s *countingValidatingSource) Webhooks() []webhook.WebhookAccessor { return nil }
+func (s *countingValidatingSource) HasSynced() bool                     { return true }
