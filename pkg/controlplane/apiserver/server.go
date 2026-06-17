@@ -22,9 +22,11 @@ import (
 	"os"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	coordinationapiv1 "k8s.io/api/coordination/v1"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	apiserverfeatures "k8s.io/apiserver/pkg/features"
@@ -36,6 +38,7 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientgoinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/component-helpers/apimachinery/lease"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
@@ -254,6 +257,38 @@ func (c completedConfig) New(name string, delegationTarget genericapiserver.Dele
 		return nil
 	})
 
+	if utilfeature.DefaultFeatureGate.Enabled(apiserverfeatures.ExcludeAdmissionWebhookVirtualResources) {
+		validatingWebhookGVR := admissionregistrationv1.SchemeGroupVersion.WithResource("validatingwebhookconfigurations")
+		mutatingWebhookGVR := admissionregistrationv1.SchemeGroupVersion.WithResource("mutatingwebhookconfigurations")
+		validatingWebhookEnabled := s.APIResourceConfigSource.ResourceEnabled(validatingWebhookGVR)
+		mutatingWebhookEnabled := s.APIResourceConfigSource.ResourceEnabled(mutatingWebhookGVR)
+		if validatingWebhookEnabled || mutatingWebhookEnabled {
+			var validatingWebhookLister validatingWebhookConfigurationLister
+			var mutatingWebhookLister mutatingWebhookConfigurationLister
+			var synced []cache.InformerSynced
+
+			if validatingWebhookEnabled {
+				validatingWebhookInformer := s.VersionedInformers.Admissionregistration().V1().ValidatingWebhookConfigurations()
+				_ = validatingWebhookInformer.Informer()
+				validatingWebhookLister = validatingWebhookInformer.Lister()
+				synced = append(synced, validatingWebhookInformer.Informer().HasSynced)
+			}
+			if mutatingWebhookEnabled {
+				mutatingWebhookInformer := s.VersionedInformers.Admissionregistration().V1().MutatingWebhookConfigurations()
+				_ = mutatingWebhookInformer.Informer()
+				mutatingWebhookLister = mutatingWebhookInformer.Lister()
+				synced = append(synced, mutatingWebhookInformer.Informer().HasSynced)
+			}
+			s.GenericAPIServer.AddPostStartHookOrDie("warn-on-excluded-admission-webhook-virtual-resources", func(hookContext genericapiserver.PostStartHookContext) error {
+				if !cache.WaitForNamedCacheSync("excluded-admission-webhook-virtual-resources", hookContext.Done(), synced...) {
+					return nil
+				}
+				logExcludedAdmissionWebhookWarnings(validatingWebhookLister, mutatingWebhookLister)
+				return nil
+			})
+		}
+	}
+
 	if utilfeature.DefaultFeatureGate.Enabled(apiserverfeatures.APIServerIdentity) {
 		leaseName := s.GenericAPIServer.APIServerID
 		holderIdentity := s.GenericAPIServer.APIServerID + "_" + string(uuid.NewUUID())
@@ -332,5 +367,38 @@ func labelAPIServerHeartbeatFunc(identity string, peeraddress string) lease.Proc
 			}
 		}
 		return nil
+	}
+}
+
+type validatingWebhookConfigurationLister interface {
+	List(selector labels.Selector) (ret []*admissionregistrationv1.ValidatingWebhookConfiguration, err error)
+}
+
+type mutatingWebhookConfigurationLister interface {
+	List(selector labels.Selector) (ret []*admissionregistrationv1.MutatingWebhookConfiguration, err error)
+}
+
+func logExcludedAdmissionWebhookWarnings(validatingLister validatingWebhookConfigurationLister, mutatingLister mutatingWebhookConfigurationLister) {
+	var validatingConfigs []*admissionregistrationv1.ValidatingWebhookConfiguration
+	if validatingLister != nil {
+		configs, err := validatingLister.List(labels.Everything())
+		if err != nil {
+			klog.Warningf("failed to list validating webhook configurations for excluded virtual resource warnings: %v", err)
+			return
+		}
+		validatingConfigs = configs
+	}
+
+	var mutatingConfigs []*admissionregistrationv1.MutatingWebhookConfiguration
+	if mutatingLister != nil {
+		configs, err := mutatingLister.List(labels.Everything())
+		if err != nil {
+			klog.Warningf("failed to list mutating webhook configurations for excluded virtual resource warnings: %v", err)
+			return
+		}
+		mutatingConfigs = configs
+	}
+	for _, warning := range excludedAdmissionWebhookWarnings(validatingConfigs, mutatingConfigs) {
+		klog.Warningf("%s", warning)
 	}
 }

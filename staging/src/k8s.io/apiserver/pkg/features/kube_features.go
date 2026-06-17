@@ -152,6 +152,12 @@ const (
 	EtcdRangeStream featuregate.Feature = "EtcdRangeStream"
 
 	// owner: @aramase
+	// kep: https://kep.k8s.io/5793
+	//
+	// Excludes selected virtual resources from admission webhook dispatch.
+	ExcludeAdmissionWebhookVirtualResources featuregate.Feature = "ExcludeAdmissionWebhookVirtualResources"
+
+	// owner: @aramase
 	// kep: https://kep.k8s.io/3299
 	// deprecated: v1.28
 	//
@@ -374,6 +380,10 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 
 	EtcdRangeStream: {
 		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Beta},
+	},
+
+	ExcludeAdmissionWebhookVirtualResources: {
+		{Version: version.MustParse("1.37"), Default: true, PreRelease: featuregate.Beta},
 	},
 
 	KMSv1: {

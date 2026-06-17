@@ -29,6 +29,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/admissionregistration"
 	"k8s.io/kubernetes/pkg/apis/admissionregistration/validation"
+	"k8s.io/kubernetes/pkg/kubeapiserver/admission/exclusion"
 )
 
 // mutatingWebhookConfigurationStrategy implements verification logic for mutatingWebhookConfiguration.
@@ -54,10 +55,14 @@ func (mutatingWebhookConfigurationStrategy) PrepareForCreate(ctx context.Context
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (mutatingWebhookConfigurationStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
 	ic := obj.(*admissionregistration.MutatingWebhookConfiguration)
+	var warnings []string
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ManifestBasedAdmissionControlConfig) {
-		return validation.WarningsForStaticSuffix(ic.Name)
+		warnings = validation.WarningsForStaticSuffix(ic.Name)
 	}
-	return nil
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ExcludeAdmissionWebhookVirtualResources) {
+		return warnings
+	}
+	return append(warnings, excludedVirtualResourceWarnings(ic)...)
 }
 
 // PrepareForUpdate clears fields that are not allowed to be set by end users on update.
@@ -103,11 +108,33 @@ func (mutatingWebhookConfigurationStrategy) ValidateUpdate(ctx context.Context, 
 // WarningsOnUpdate returns warnings for the given update.
 func (mutatingWebhookConfigurationStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
 	newIC := obj.(*admissionregistration.MutatingWebhookConfiguration)
-	return validation.WarningsForStaticSuffix(newIC.Name)
+	warnings := validation.WarningsForStaticSuffix(newIC.Name)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ExcludeAdmissionWebhookVirtualResources) {
+		return warnings
+	}
+	return append(warnings, excludedVirtualResourceWarnings(newIC)...)
 }
 
 // AllowUnconditionalUpdate is the default update policy for mutatingWebhookConfiguration objects. Status update should
 // only be allowed if version match.
 func (mutatingWebhookConfigurationStrategy) AllowUnconditionalUpdate(ctx context.Context) bool {
 	return false
+}
+
+func excludedVirtualResourceWarnings(configuration *admissionregistration.MutatingWebhookConfiguration) []string {
+	var warnings []string
+	for _, webhook := range configuration.Webhooks {
+		warnedResources := map[string]struct{}{}
+		for _, rule := range webhook.Rules {
+			for _, resource := range exclusion.ExplicitlyNamedExcludedResources(rule.APIGroups, rule.Resources) {
+				resourceKey := resource.String()
+				if _, seen := warnedResources[resourceKey]; seen {
+					continue
+				}
+				warnedResources[resourceKey] = struct{}{}
+				warnings = append(warnings, exclusion.WebhookConfigurationWarning(webhook.Name, "MutatingWebhookConfiguration", configuration.Name, resource))
+			}
+		}
+	}
+	return warnings
 }

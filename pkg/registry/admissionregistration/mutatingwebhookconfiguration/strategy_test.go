@@ -17,6 +17,7 @@ limitations under the License.
 package mutatingwebhookconfiguration
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,6 +121,71 @@ func TestStaticSuffixWarningsAndValidation(t *testing.T) {
 		warnings := Strategy.WarningsOnUpdate(ctx, makeConfig(staticName), makeConfig(staticName))
 		if len(warnings) == 0 {
 			t.Error("Expected warning for .static.k8s.io suffix on update even when feature gate is enabled")
+		}
+	})
+}
+
+func TestExcludedVirtualResourceWarnings(t *testing.T) {
+	ctx := genericapirequest.NewDefaultContext()
+
+	makeConfig := func(name string, groups, resources []string) *admissionregistration.MutatingWebhookConfiguration {
+		cfg := validMutatingWebhookConfiguration()
+		cfg.Name = name
+		cfg.Webhooks[0].Rules = []admissionregistration.RuleWithOperations{{
+			Rule: admissionregistration.Rule{
+				APIGroups:   groups,
+				APIVersions: []string{"v1"},
+				Resources:   resources,
+			},
+		}}
+		return cfg
+	}
+
+	t.Run("feature gate enabled warns on exact excluded resource match", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, true)
+
+		warnings := Strategy.WarningsOnCreate(ctx, makeConfig("matching-config", []string{"authorization.k8s.io"}, []string{"subjectaccessreviews"}))
+		if len(warnings) != 1 {
+			t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+		}
+		expected := `webhook "foo.example.io" in MutatingWebhookConfiguration "matching-config" matches excluded virtual resource authorization.k8s.io/subjectaccessreviews; this resource will not be sent to webhooks when the ExcludeAdmissionWebhookVirtualResources feature gate is enabled (default in v1.37)`
+		if warnings[0] != expected {
+			t.Fatalf("expected warning %q, got %q", expected, warnings[0])
+		}
+	})
+
+	t.Run("feature gate enabled does not warn on wildcard matches", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, true)
+
+		warnings := Strategy.WarningsOnCreate(ctx, makeConfig("wildcard-config", []string{"*"}, []string{"subjectaccessreviews"}))
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings for wildcard group match, got %v", warnings)
+		}
+
+		warnings = Strategy.WarningsOnCreate(ctx, makeConfig("wildcard-config", []string{"authorization.k8s.io"}, []string{"*"}))
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings for wildcard resource match, got %v", warnings)
+		}
+	})
+
+	t.Run("feature gate disabled does not warn", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, false)
+
+		warnings := Strategy.WarningsOnCreate(ctx, makeConfig("matching-config", []string{"authorization.k8s.io"}, []string{"subjectaccessreviews"}))
+		if len(warnings) != 0 {
+			t.Fatalf("expected no warnings when feature gate is disabled, got %v", warnings)
+		}
+	})
+
+	t.Run("update appends excluded virtual resource warning", func(t *testing.T) {
+		featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExcludeAdmissionWebhookVirtualResources, true)
+
+		warnings := Strategy.WarningsOnUpdate(ctx, makeConfig("matching-config.static.k8s.io", []string{"authorization.k8s.io"}, []string{"subjectaccessreviews"}), makeConfig("matching-config.static.k8s.io", []string{"authorization.k8s.io"}, []string{"subjectaccessreviews"}))
+		if len(warnings) != 2 {
+			t.Fatalf("expected 2 warnings, got %d: %v", len(warnings), warnings)
+		}
+		if !strings.Contains(warnings[1], "matches excluded virtual resource authorization.k8s.io/subjectaccessreviews") {
+			t.Fatalf("expected excluded virtual resource warning to be appended, got %v", warnings)
 		}
 	})
 }
