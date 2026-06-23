@@ -151,6 +151,17 @@ const (
 	// Enables the RangeStream RPC for list operations in etcd.
 	EtcdRangeStream featuregate.Feature = "EtcdRangeStream"
 
+	// owner: @aramase @BenTheElder
+	// kep: https://kep.k8s.io/5793
+	//
+	// Excludes the same non-persisted authentication and authorization virtual resources
+	// (SubjectAccessReview, SelfSubjectAccessReview, LocalSubjectAccessReview,
+	// SelfSubjectRulesReview, SelfSubjectReview, TokenReview) from ValidatingAdmissionWebhook
+	// and MutatingAdmissionWebhook that ValidatingAdmissionPolicy and MutatingAdmissionPolicy
+	// already exclude. When enabled, admission webhooks are not dispatched for these
+	// resources, preventing a webhook from wedging a cluster out of its own auth path.
+	ExcludeAdmissionWebhookVirtualResources featuregate.Feature = "ExcludeAdmissionWebhookVirtualResources"
+
 	// owner: @aramase
 	// kep: https://kep.k8s.io/3299
 	// deprecated: v1.28
@@ -374,6 +385,10 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 
 	EtcdRangeStream: {
 		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Beta},
+	},
+
+	ExcludeAdmissionWebhookVirtualResources: {
+		{Version: version.MustParse("1.37"), Default: true, PreRelease: featuregate.Beta},
 	},
 
 	KMSv1: {
