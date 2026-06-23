@@ -51,6 +51,7 @@ type Plugin struct {
 
 var _ admission.ValidationInterface = &Plugin{}
 var _ initializer.WantsManifestLoaders = &Plugin{}
+var _ initializer.WantsExcludedAdmissionResources = &Plugin{}
 
 // SetManifestLoaders provides the manifest load functions for scheme-based defaulting and validation.
 func (a *Plugin) SetManifestLoaders(loaders *initializer.ManifestLoaders) {

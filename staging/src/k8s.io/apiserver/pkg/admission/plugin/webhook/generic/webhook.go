@@ -30,6 +30,7 @@ import (
 	v1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	genericadmissioninit "k8s.io/apiserver/pkg/admission/initializer"
 	admissionmetrics "k8s.io/apiserver/pkg/admission/metrics"
@@ -78,15 +79,25 @@ type Webhook struct {
 	filterCompiler    cel.ConditionCompiler
 	authorizer        authorizer.UnconditionalAuthorizer
 
+	// excludedResources are non-persisted authentication and authorization virtual
+	// resources (e.g. SubjectAccessReview, TokenReview) injected via the
+	// WantsExcludedAdmissionResources initializer. When excludeVirtualResources is
+	// set, requests for these resources are not dispatched to any webhook.
+	excludedResources sets.Set[schema.GroupResource]
+	// excludeVirtualResources is the snapshot of the
+	// ExcludeAdmissionWebhookVirtualResources feature gate, taken at initialization.
+	excludeVirtualResources bool
+
 	// Lifecycle.
 	stopCh <-chan struct{}
 }
 
 var (
-	_ genericadmissioninit.WantsExternalKubeClientSet = &Webhook{}
-	_ genericadmissioninit.WantsDrainedNotification   = &Webhook{}
-	_ genericadmissioninit.WantsAPIServerID           = &Webhook{}
-	_ admission.Interface                             = &Webhook{}
+	_ genericadmissioninit.WantsExternalKubeClientSet      = &Webhook{}
+	_ genericadmissioninit.WantsDrainedNotification        = &Webhook{}
+	_ genericadmissioninit.WantsAPIServerID                = &Webhook{}
+	_ genericadmissioninit.WantsExcludedAdmissionResources = &Webhook{}
+	_ admission.Interface                                  = &Webhook{}
 )
 
 type sourceFactory func(f informers.SharedInformerFactory) Source
@@ -199,6 +210,13 @@ func (a *Webhook) SetUnconditionalAuthorizer(authorizer authorizer.Unconditional
 	a.authorizer = authorizer
 }
 
+// SetExcludedAdmissionResources implements the WantsExcludedAdmissionResources interface.
+// These non-persisted auth/authz virtual resources are skipped at admission time when the
+// ExcludeAdmissionWebhookVirtualResources feature gate is enabled.
+func (a *Webhook) SetExcludedAdmissionResources(excludedResources []schema.GroupResource) {
+	a.excludedResources = sets.New(excludedResources...)
+}
+
 // ValidateInitialization implements the InitializationValidator interface.
 // Static source creation happens here (after all initializers have run) because
 // SetManifestLoaders may be called after SetExternalKubeInformerFactory.
@@ -217,6 +235,10 @@ func (a *Webhook) ValidateInitialization() error {
 	if len(a.staticManifestsDir) > 0 && !utilfeature.DefaultFeatureGate.Enabled(features.ManifestBasedAdmissionControlConfig) {
 		return fmt.Errorf("static webhook manifests dir %q configured but %s feature gate is not enabled", a.staticManifestsDir, features.ManifestBasedAdmissionControlConfig)
 	}
+
+	// Snapshot the exclusion gate once. The effective feature gate state is fixed for
+	// the lifetime of the server, so reading it here keeps it off the admission hot path.
+	a.excludeVirtualResources = utilfeature.DefaultFeatureGate.Enabled(features.ExcludeAdmissionWebhookVirtualResources)
 
 	// Construct hookSource. The static source path (which starts goroutines)
 	// is guarded to avoid duplicate construction. The API-only path is a cheap
@@ -355,6 +377,13 @@ func (a *attrWithResourceOverride) GetResource() schema.GroupVersionResource { r
 
 // Dispatch is called by the downstream Validate or Admit methods.
 func (a *Webhook) Dispatch(ctx context.Context, attr admission.Attributes, o admission.ObjectInterfaces) error {
+	if a.excludeVirtualResources && a.excludedResources.Has(attr.GetResource().GroupResource()) {
+		// Non-persisted authentication and authorization virtual resources (e.g.
+		// SubjectAccessReview, TokenReview) are excluded from all webhook admission to
+		// avoid wedging a cluster out of its own auth path. This matches the exclusion
+		// already applied to ValidatingAdmissionPolicy and MutatingAdmissionPolicy.
+		return nil
+	}
 	if rules.IsExemptAdmissionConfigurationResource(attr) {
 		// Admission config resources are excluded from API-based webhooks to
 		// prevent circular dependencies. However, static (manifest-based) webhooks
