@@ -36,4 +36,36 @@ type WebhookAdmission struct {
 	// feature gate to be enabled.
 	// +optional
 	StaticManifestsDir string
+
+	// StaticOrder determines where the webhooks loaded from StaticManifestsDir are
+	// placed relative to the webhooks read from the API. Mutating webhooks are
+	// dispatched sequentially, so this controls the order in which they observe and
+	// mutate an object.
+	// Empty means StaticFirst, which is the only behavior available before v1.38.
+	// May only be set when StaticManifestsDir is set.
+	// This field is only honored by the MutatingAdmissionWebhook plugin. Setting it to
+	// any value other than StaticFirst on the ValidatingAdmissionWebhook plugin is a
+	// configuration error, because validating webhooks are dispatched in parallel
+	// against the same object and cannot have ordering dependencies.
+	// Using this field requires the ManifestBasedAdmissionControlConfig feature gate
+	// to be enabled.
+	// +optional
+	StaticOrder StaticOrder
 }
+
+// StaticOrder determines where manifest-based webhooks are placed relative to
+// webhooks read from the API.
+type StaticOrder string
+
+const (
+	// StaticFirst runs manifest-based webhooks before all API-based webhooks.
+	StaticFirst StaticOrder = "StaticFirst"
+	// StaticLast runs manifest-based webhooks after all API-based webhooks.
+	StaticLast StaticOrder = "StaticLast"
+	// ByName interleaves manifest-based and API-based webhooks, stably sorting them
+	// together by the name of the webhook configuration that contains them. This is
+	// how API-based webhooks are already ordered relative to each other, so a
+	// manifest-based configuration keeps the position of the API-based configuration
+	// it replaces when it is named after it.
+	ByName StaticOrder = "ByName"
+)
